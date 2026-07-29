@@ -1,7 +1,7 @@
 import re
 from typing import Annotated, Optional, Sequence, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -9,9 +9,19 @@ from langgraph.graph.message import add_messages
 from agent.model_router import get_model
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
+from agent.tools.search_vault import search_vault
 
 MAX_STEPS = 15
 FLAG_PATTERN = re.compile(r"\w+\{[^{}]+\}")
+SYSTEM_PROMPT = SystemMessage(
+    content=(
+        "You are a CTF-solving assistant. The team keeps curated CTF knowledge notes "
+        "(techniques, common flag locations, cheat sheets) in a vault of Markdown files. "
+        "Before answering a technique or 'what should I check' style question from your "
+        "own general knowledge, call search_vault to check whether the vault already has "
+        "relevant notes, and ground your answer in what it returns when it does."
+    )
+)
 
 
 @tool
@@ -20,7 +30,7 @@ def echo(text: str) -> str:
     return text
 
 
-TOOLS = [echo, find_flag_pattern, identify_and_decode]
+TOOLS = [echo, find_flag_pattern, identify_and_decode, search_vault]
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
 
@@ -34,7 +44,10 @@ def build_graph(provider: str = "google"):
     model = get_model(provider).bind_tools(TOOLS)
 
     def think(state: AgentState) -> dict:
-        response = model.invoke(state["messages"])
+        messages = state["messages"]
+        if not messages or not isinstance(messages[0], SystemMessage):
+            messages = [SYSTEM_PROMPT] + list(messages)
+        response = model.invoke(messages)
         return {"messages": [response], "steps": state["steps"] + 1}
 
     def act(state: AgentState) -> dict:
@@ -115,3 +128,19 @@ if __name__ == "__main__":
     print("steps:", case_3_final["steps"])
     print("flag:", case_3_final["flag"])
     assert case_3_final["flag"] == "flag{multi_step_works}", "multi-step decode did not reach the flag"
+
+    print("\n=== case 4: vault knowledge lookup, expect search_vault call grounded in Web_Placeholder.md ===")
+    case_4_final = run_case(
+        app,
+        "I'm looking at a web challenge and found something odd in the response "
+        "headers — what should I check?",
+    )
+    tool_calls_made = {
+        message.name for message in case_4_final["messages"] if isinstance(message, ToolMessage)
+    }
+    assert "search_vault" in tool_calls_made, f"expected search_vault to be called, got {tool_calls_made}"
+    assert tool_calls_made == {"search_vault"}, f"expected only search_vault to be called, got {tool_calls_made}"
+    final_answer = case_4_final["messages"][-1].content.lower()
+    assert any(
+        term in final_answer for term in ("x-flag", "set-cookie", "custom header")
+    ), f"expected answer to reference Web_Placeholder.md's header content, got: {final_answer}"

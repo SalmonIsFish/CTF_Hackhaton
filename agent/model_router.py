@@ -5,7 +5,10 @@ load_dotenv()
 
 _PROVIDERS = {
     "anthropic": lambda: init_chat_model("claude-sonnet-4-6", model_provider="anthropic"),
-    "google": lambda: init_chat_model("gemini-flash-latest", model_provider="google_genai"),
+    # gemini-flash-latest resolves to gemini-3.6-flash, which only has a 20/day free-tier
+    # quota; gemini-3.5-flash-lite has 500/day and passed all 4 harness test cases,
+    # including multi-step tool chaining.
+    "google": lambda: init_chat_model("gemini-3.5-flash-lite", model_provider="google_genai"),
     "groq": lambda: init_chat_model("llama-3.3-70b-versatile", model_provider="groq"),
 }
 
