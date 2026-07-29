@@ -7,6 +7,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from agent.model_router import get_model
+from agent.tools.find_flag_pattern import find_flag_pattern
+from agent.tools.identify_and_decode import identify_and_decode
 
 MAX_STEPS = 15
 FLAG_PATTERN = re.compile(r"\w+\{[^{}]+\}")
@@ -18,7 +20,7 @@ def echo(text: str) -> str:
     return text
 
 
-TOOLS = [echo]
+TOOLS = [echo, find_flag_pattern, identify_and_decode]
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
 
@@ -104,3 +106,12 @@ if __name__ == "__main__":
     case_2_final = run_case(app, "Call the echo tool with the exact text 'flag{test_early_exit}'.")
     assert case_2_final["flag"] == "flag{test_early_exit}", "flag was not captured"
     assert case_2_final["steps"] < MAX_STEPS, "loop did not exit early on flag detection"
+
+    print("\n=== case 3: multi-step decode, expect two identify_and_decode calls to reach the flag ===")
+    case_3_final = run_case(
+        app,
+        "Decode this: NjY2YzYxNjc3YjZkNzU2Yzc0Njk1ZjczNzQ2NTcwNWY3NzZmNzI2YjczN2Q=",
+    )
+    print("steps:", case_3_final["steps"])
+    print("flag:", case_3_final["flag"])
+    assert case_3_final["flag"] == "flag{multi_step_works}", "multi-step decode did not reach the flag"
