@@ -1,4 +1,4 @@
-# CTF HACKHATON — Agent Harness Instructions
+# CTF_HACKHATON — Agent Harness Instructions
 > Drop this in your repo root. Claude Code loads it automatically every session.
 > Fill in the `[ ]` placeholders once your team locks the idea.
 
@@ -8,6 +8,43 @@
 ## Agent Formula
 `Agent = LLM + Tools + Loop + Context`, running the ReAct cycle: **Thought → Action → Observation → repeat.**
 Every sub-agent and tool you add should map back to one of those four parts — if it doesn't, cut it before demo day.
+
+---
+
+## Current Status — Session Handoff (last updated: solo build session, agent core complete)
+
+**Read this first if you're a fresh Claude Code session picking this up.** Everything below is verified with real runs, not assumed.
+
+### What's built and working
+- `agent/model_router.py` — `get_model(provider)` for anthropic/google/groq, lazy-loaded via LangChain's `init_chat_model`, keys from `.env`
+- `agent/graph.py` — LangGraph ReAct loop (think → act → observe), `MAX_STEPS = 15`, exits early when a tool result matches the flag pattern or the model returns no tool call. Includes a `SystemMessage` instructing the model to actively use tools — especially `search_vault` — rather than answering from its own general knowledge.
+- Tools in `agent/tools/`: `echo` (dummy, still in place), `find_flag_pattern` (regex for `flag{...}`/`CTF{...}`), `identify_and_decode` (base64/hex/rot13 — rot13 always "succeeds" on alphabetic input, documented in its own docstring/description), `search_vault` (substring search across `vault/*.md`, returns filename + line + context)
+- `.mcp.json` — wired to **seekstone** (filesystem-based, no Obsidian app or plugin needed). Note: the original plan referenced `mcpvault`, which turned out to be placeholder text, not a real npm package — corrected to seekstone. **Not yet security-reviewed** — community-published, has read+write vault access. Worth a look at github.com/shaqmughal/seekstone before leaning on it for anything sensitive.
+- `evals/test_tools_smoke.py` — standalone tests for all three real tools, passing
+- `agent/graph.py`'s `__main__` block — 4 end-to-end test cases, **all passing** as of tonight on `gemini-3.5-flash-lite`:
+  1. Plain echo (baseline loop works)
+  2. Echo a flag → confirms early-exit works, doesn't run to MAX_STEPS
+  3. Double-encoded flag (base64 of hex) → confirms **multi-step tool chaining** across loop iterations, not just single calls
+  4. Vault lookup question → confirms the model calls `search_vault` (not just answering from training data) and grounds its answer in `vault/Web_Placeholder.md`
+
+### Model choice — hard-won today, don't relitigate without new evidence
+- **Default is `gemini-3.5-flash-lite`** (Google), not `gemini-flash-latest`/`gemini-3.6-flash` — that one only has a 20-requests/day free quota and gets exhausted fast. `gemini-3.5-flash-lite` has 500/day and passed all 4 cases including chaining.
+- `gemini-2.5-flash` — **retired**, 404s on this key regardless of quota. Don't retry it.
+- `gemini-2.0-flash` — zero free-tier entitlement on this key. Don't bother.
+- Groq `gpt-oss-120b` — reliable tool-call *syntax*, but **fails multi-step chaining** (case 3): calls `echo` redundantly instead of re-decoding, states the flag as prose instead of through a tool. Not suitable as primary.
+- Groq `llama-3.3-70b-versatile` — reproducibly emits malformed tool-call syntax, rejected by Groq as `400 tool_use_failed`. This is a known, documented issue with Llama models + tool-calling generally, not specific to this project. Don't use for anything requiring tool calls.
+- Full comparison table lives in `evals/practice_runs.md`.
+
+### Known harmless noise (don't waste time on these)
+- `UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14` — cosmetic, from LangChain's compat shim, not a real failure.
+- Windows console may show `�` for em-dashes — cosmetic terminal encoding, not file corruption (confirmed the underlying files are clean UTF-8).
+
+### Not yet done
+- Rashid hasn't started — categories not yet locked (Web + Crypto + Forensics is the working assumption from earlier planning, not confirmed)
+- Hasif hasn't started — but there's now a real, tested agent to point the dashboard at instead of a stub
+- Farhan's real vault content not yet in `vault/` (only the placeholder `README.md` and test-fixture `Web_Placeholder.md` exist)
+- Multi-API-key rotation/fallback (pooling teammates' keys with automatic failover) — discussed as competition-day insurance, not built yet, low priority given 500 RPD headroom already found on the current default
+- Awaiting organizer reply on: network/internet access during competition, presentation vs. flag-only scoring, confirmed categories, autonomy requirements, environment/VM provisioning, team-role rules, submission format
 
 ---
 
@@ -26,27 +63,32 @@ Detailed, step-by-step task briefs for Hasif, Rashid, and Farhan are in `TEAM_TA
 
 Git workflow: small feature branches (`frontend/*`, `agent/*`, `prompts/*`), PR into `main` every 60–90 min, integrate early and often — don't save integration for the last hour.
 
-## 2. Free-Tier Model Routing
-Since only you have Claude Code, keep the agent's *model provider* swappable so teammates can build/test against something they can actually call for free:
-
-- **Google AI Studio** — free Gemini API key, generous quota, good default for teammates B/A to prototype tool-calling against.
-- **Groq Cloud** — free, extremely fast inference on open models (Llama, etc.) — good for latency-sensitive demo loops.
-- **OpenRouter** — free-tier models as a fallback if you hit rate limits mid-hackathon.
-- Route through LangChain's chat model abstraction so switching provider is a one-line change, not a rewrite:
+## 2. Free-Tier Model Routing (updated with verified findings — see Current Status above)
+Since only you have Claude Code, keep the agent's *model provider* swappable so teammates can build/test against something they can actually call for free. The specific model choices below aren't the original plan — they're what actually survived real testing:
 
 ```python
-# model_router.py
+# model_router.py — as of tonight's build
 from langchain.chat_models import init_chat_model
+from dotenv import load_dotenv
+load_dotenv()
+
+_PROVIDERS = {
+    "anthropic": lambda: init_chat_model("claude-sonnet-4-6", model_provider="anthropic"),
+    "google":    lambda: init_chat_model("gemini-3.5-flash-lite", model_provider="google_genai"),  # NOT gemini-flash-latest — see below
+    "groq":      lambda: init_chat_model("llama-3.3-70b-versatile", model_provider="groq"),  # has known tool-call bugs — see below
+}
 
 def get_model(provider: str = "google"):
-    return {
-        "anthropic": lambda: init_chat_model("claude-sonnet-4-6", model_provider="anthropic"),
-        "google":    lambda: init_chat_model("gemini-2.5-flash", model_provider="google_genai"),
-        "groq":      lambda: init_chat_model("llama-3.3-70b-versatile", model_provider="groq"),
-    }[provider]()
+    if provider not in _PROVIDERS:
+        raise ValueError(f"Unknown provider '{provider}'. Choose from: {list(_PROVIDERS)}")
+    return _PROVIDERS[provider]()
 ```
 
-You keep Claude Code for orchestration/dev work; the shipped agent can run on whichever provider is cheapest/fastest for the demo.
+**Why `gemini-3.5-flash-lite` and not the more obvious `gemini-2.5-flash` or `gemini-flash-latest`:** rate limits on Google AI Studio are per-model, not per-account, and they vary wildly — `gemini-flash-latest` (resolves to `gemini-3.6-flash`) is capped at 20 requests/day on a free key, which is not enough for a full competition day. `gemini-2.5-flash` is retired entirely on newer keys. `gemini-3.5-flash-lite` has 500/day and, importantly, passed the hardest test (multi-step tool chaining) that a faster/cheaper Groq model failed. Check current rate limits yourself before the competition — these change and shouldn't be trusted from memory (yours or Claude's): Google AI Studio's own dashboard shows live, per-model numbers for whatever key you're using.
+
+**Why not just use Groq as primary despite the free-tier headroom being larger:** raw request quota doesn't matter if the model can't reliably format tool calls. Verified today: Llama models on Groq have a known, reproducible issue emitting malformed tool-call syntax that gets rejected outright. A newer OpenAI-lineage model on Groq (`gpt-oss-120b`) fixed that specific problem but was worse at *multi-step* reasoning (chaining two tool calls in sequence) — which matters more for CTF challenges than raw syntax correctness. Don't assume this is fixed without re-testing; open-model tool-calling reliability is genuinely inconsistent across providers and versions.
+
+You keep Claude Code for orchestration/dev work; the shipped agent runs on whichever provider actually passed the eval suite — check `evals/practice_runs.md` before changing the default.
 
 ## 3. Agent Harness Checklist
 Your brief named 5 elements under "9 Harness Elements" — here's the full 9 so nothing's missed at integration time:
@@ -64,14 +106,16 @@ Your brief named 5 elements under "9 Harness Elements" — here's the full 9 so 
 ## 4. Obsidian Integration
 Obsidian works well here as your agent's **long-term memory / knowledge base**, and it's the natural home for Teammate C's mobile-only contributions (notes, pitch draft, task list — all sync automatically into the vault the agent reads from).
 
-Two MCP server options, pick based on time budget:
+**Update: already set up, using `seekstone`.** The original two options below are kept for context, but `mcpvault` (previously listed) turned out to be placeholder text, not a real package — it 404s on npm. The repo now uses **seekstone** (github.com/shaqmughal/seekstone), a real filesystem-direct server, confirmed connected via `claude mcp list`.
+
+⚠️ **Not yet security-reviewed.** It's community-published (not an official/vendor package) and has read+write access to `vault/`. Per §5's vetting checklist, worth a quick look at its source before the team leans on it for anything sensitive — this was flagged but not yet done as of this handoff.
+
+Two MCP server options, for reference:
 
 | Option | Needs Obsidian running? | Setup time | Good for |
 |---|---|---|---|
 | `mcp-obsidian` (REST API plugin-based) | Yes | ~10 min (install community plugin + API key) | Most documented, widest adoption |
-| Filesystem-based server (e.g. `obsidian-mcp`, `mcpvault`) | No — reads the vault folder directly | ~5 min | Faster hackathon setup, no plugin dependency |
-
-For a hackathon, the filesystem option is usually less friction — no plugin/API-key dance, works even if Obsidian isn't open on anyone's machine.
+| Filesystem-based server (e.g. `seekstone`) | No — reads the vault folder directly | ~5 min | Faster hackathon setup, no plugin dependency — **this is what's in use** |
 
 `.mcp.json` (project-level, so the whole team's Claude Code sessions pick it up):
 ```json
@@ -79,12 +123,14 @@ For a hackathon, the filesystem option is usually less friction — no plugin/AP
   "mcpServers": {
     "obsidian": {
       "command": "npx",
-      "args": ["-y", "mcpvault", "/path/to/shared/vault"]
+      "args": ["-y", "seekstone", "./vault"]
     }
   }
 }
 ```
-Wire it into LangGraph via `langchain-mcp-adapters` so your Python agent can call vault tools the same way it calls any other tool.
+**Important distinction, easy to conflate:** this `.mcp.json` wires the vault into **Claude Code** (so it can read vault notes while helping you build) — it does **not** automatically wire the vault into the actual competition-day agent. That's handled separately by the `search_vault` tool in `agent/tools/`, a plain Python function that reads `vault/*.md` directly. Two different consumers of the same folder; don't assume one gives you the other.
+
+New MCP servers found in `.mcp.json` require one-time interactive approval (`claude mcp list` will show "Pending approval" until you run `claude` in a real interactive terminal and approve it — doesn't work through piped/non-interactive sessions). Already approved for "this and future servers in this project" as of this handoff, so this shouldn't prompt again on this machine.
 
 ## 5. Vetting Third-Party Skills (skills.sh)
 Worth knowing before your team installs anything: independent audits in 2026 (Snyk's ToxicSkills study, the ClawHavoc campaign) found real malicious skills distributed through skills.sh and ClawHub — credential exfiltration, backdoors, prompt injection — and researchers later showed the platform's automated malware scanner can be bypassed with basic obfuscation. So **no one can hand you a verified "safe" list**, including me — treat every third-party skill like an unreviewed code dependency.
@@ -97,18 +143,30 @@ Before installing any skill from skills.sh:
 - [ ] Avoid ClawHub entirely for this event — it's the platform named in the 2026 ClawHavoc campaign.
 - [ ] When in doubt, just write your own `SKILL.md` — for a 5-person hackathon team, a hand-written skill takes 10 minutes and carries zero supply-chain risk.
 
-## 6. Repo Structure
+## 6. Repo Structure (as actually built, not just planned)
 ```
-project/
+CTF_Hackhaton/
 ├── CLAUDE.md              ← this file
-├── .mcp.json              ← Obsidian + other MCP servers
-├── agent/                 ← LangGraph / Pydantic AI backend
-│   ├── graph.py
-│   ├── model_router.py
+├── TEAM_TASKS.md          ← detailed per-person task briefs
+├── .env / .env.example    ← API keys (ANTHROPIC_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY) — .env is gitignored
+├── .gitignore
+├── requirements.txt
+├── .mcp.json              ← seekstone (Obsidian vault access for Claude Code)
+├── agent/
+│   ├── model_router.py    ← done, verified
+│   ├── graph.py           ← done, verified — ReAct loop + system prompt, 4 passing test cases in __main__
 │   └── tools/
-├── frontend/               ← Vercel AI SDK app
-├── evals/                  ← test cases (harness element 8)
-└── vault/                  ← shared Obsidian vault (or symlink to it)
+│       ├── echo.py                  (dummy, still present alongside real tools)
+│       ├── find_flag_pattern.py     ← done, verified
+│       ├── identify_and_decode.py   ← done, verified
+│       └── search_vault.py          ← done, verified
+├── frontend/              ← not started (Hasif's part)
+├── evals/
+│   ├── test_tools_smoke.py   ← standalone tool tests, passing
+│   └── practice_runs.md      ← model comparison findings + picoCTF results go here
+└── vault/
+    ├── README.md              ← placeholder, explains folder purpose
+    └── Web_Placeholder.md     ← test fixture only — replace/expand with Farhan's real notes
 ```
 
 ## 7. Rough Timeline
