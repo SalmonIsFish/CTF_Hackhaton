@@ -80,3 +80,60 @@ real toolchain (pwntools, angr, radare2, hashcat, sagemath, Frida, etc.) via
 sudo/apt/brew/pip/go. Do this ahead of the event, not live during it, and note
 CLAUDE.md still lists "network/internet access during competition" as an unanswered
 organizer question — that affects whether this step is even viable on the day.
+
+## Installed: `arttapon1/defensive-soc-skills` (2026-07-30)
+
+**What it is:** 3 skill packs, defensive/blue-team oriented (the offense-only
+`ctf-forensics`/`ctf-malware` above don't cover this): `ir-report-builder` (logs →
+normalized timeline → NIST SP 800-61 / SANS PICERL incident response report + exec
+summary), `siem-detection-engineer` (writes vendor-neutral Sigma detection rules,
+converts to Splunk SPL / Sentinel KQL / Elastic EQL, maps to MITRE ATT&CK), and
+`soar-playbook-builder` (threat-intel enrichment + automated firewall/WAF/EDR
+response playbook generation). MIT license. **Not on officialskills.sh** (community,
+individual author) — and unlike `ctf-skills`, has essentially no community track
+record: **7 GitHub stars, 7 commits, one author.** That's the honest risk accepted
+here: this vetting rests entirely on a direct code read, not on outside validation.
+
+**Installed via:** `npx skills add arttapon1/defensive-soc-skills --all`.
+
+**Checklist review — read all 4 scripts and all 3 `SKILL.md` files directly from
+GitHub before installing, not just the README:**
+- `log_timeline.py` (ir-report-builder): normalizes syslog/CEF/JSON/CSV/CloudTrail
+  logs into one timeline; hashes every input file (SHA-256) for chain-of-custody;
+  never writes to input files.
+- `sigma_to_queries.py` (siem-detection-engineer): stdlib-only text transform,
+  Sigma YAML → SPL/KQL/EQL. No network calls at all.
+- `enrich_ioc.py` (soar-playbook-builder): queries VirusTotal / AbuseIPDB / OTX /
+  Group-IB for indicator reputation. Read-only (never blocks anything). API keys
+  come only from env vars (`VT_API_KEY`, `ABUSEIPDB_API_KEY`, `OTX_API_KEY`,
+  `GROUPIB_API_KEY`); each key is sent only to its own named vendor endpoint, never
+  logged, never cross-sent. Sources with no key set are skipped gracefully.
+- `respond_block.py` (soar-playbook-builder) — the one script that can touch real
+  infrastructure (Cloudflare/PAN-OS/FortiGate/CrowdStrike block/unblock APIs).
+  Reviewed carefully as the highest-risk file in the pack: **dry-run by default**,
+  requires an explicit `--commit` flag *and* real (non-placeholder) credentials
+  before sending anything, hard-refuses to ever block RFC1918/loopback/link-local
+  ranges regardless of flags, redacts the `Authorization` header in all printed
+  output, and every `block` action has a matching `--action unblock` rollback path.
+  This is meaningfully more safety-conscious than the bar the checklist asks for.
+- `allowed-tools` frontmatter (`Read, Grep, Glob, Bash, Write`) on all 3 — same
+  scope as the existing ctf-skills packs, no broader ask than what the workflow
+  (read logs, run the reference scripts, write reports/rules) actually needs.
+- No obfuscation, no base64 blobs, no credential-file reads, no unfamiliar domains
+  (only named, real vendor APIs: VirusTotal, AbuseIPDB, AlienVault OTX, Cloudflare,
+  Palo Alto, Fortinet, CrowdStrike).
+
+**Post-install cleanup:** the `skills` CLI's "install to all agent formats" step
+also copied a reformatted duplicate of all 3 skills into `agent/skills/` — inside
+this repo's actual Python package directory, not the project's `.agents/skills/`
+convention. Removed; only `.agents/skills/{ir-report-builder,siem-detection-engineer,
+soar-playbook-builder}` should exist. Worth double-checking after any future
+`npx skills add` in case the CLI does this again — `agent/` apparently gets swept up
+by its generic agent-directory detection.
+
+**Working conclusion:** content-level review is clean and genuinely careful
+engineering — installed. The star/commit count is real reputational risk that a
+thorough manual read doesn't fully offset; acceptable for a hackathon project where
+nothing in this pack executes automatically (an agent has to deliberately invoke
+these scripts), not something I'd wave through for production SOC automation
+without more outside review first.

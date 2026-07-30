@@ -61,6 +61,24 @@
       "skillPath": "ctf-writeup/SKILL.md",
       "computedHash": "5a412a583dcfddf93378191529dafcbe64512cd1ec7bffc0bd5cf2f9aaf30f81"
     },
+    "ir-report-builder": {
+      "source": "arttapon1/defensive-soc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ir-report-builder/SKILL.md",
+      "computedHash": "c841efac787b789c129f5d01d7e0bf92d0f29754b11b47f1d77b971a07ce57b1"
+    },
+    "siem-detection-engineer": {
+      "source": "arttapon1/defensive-soc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/siem-detection-engineer/SKILL.md",
+      "computedHash": "5db91d18923cc4c4136fc698b4b30ccb05b1d0027330105c02e22f5ef4326bec"
+    },
+    "soar-playbook-builder": {
+      "source": "arttapon1/defensive-soc-skills",
+      "sourceType": "github",
+      "skillPath": "skills/soar-playbook-builder/SKILL.md",
+      "computedHash": "c3e5ecacbf68b65948938e76d0f7c5ec863e92244982fba62f95427e2df58a1f"
+    },
     "solve-challenge": {
       "source": "ljagiello/ctf-skills",
       "sourceType": "github",
