@@ -1,3 +1,24 @@
+## Network Tool Practice Runs
+
+Phase 1 of `NEXT_STEPS.md`: the network tools (`fetch_url`, `tcp_open`/`tcp_send`/`tcp_close`,
+`port_scan`) had only been proven against a single trivial local server (one GET, one echo
+exchange) before this. These are local stand-ins built to stress two specific gaps that
+weren't exercised yet — a genuinely multi-turn TCP service, and an HTTP redirect+cookie
+chain — run through the **full agent loop** (`python -m evals.practice_runs_network`), not
+the tool in isolation. All three passed with `gemini-3.5-flash-lite`.
+
+| Scenario | Tool(s) exercised | Result | Notes |
+|---|---|---|---|
+| Login-gated multi-turn TCP service (`Password:` prompt, then a second `flag` command) | `tcp_open`, `tcp_send` (x2), `tcp_close` | PASS | Reached `flag{multi_turn_tcp_works}` via a real open→send→send sequence, confirming `tcp_session` isn't limited to one-shot exchanges. The model made a couple of extra `tcp_open`/`tcp_close` calls before landing on the right sequence — didn't fail, just wasn't maximally efficient; worth a glance if step budget ever gets tight on a similar real service. |
+| HTTP redirect (302 + `Set-Cookie`) → final response with the flag | `fetch_url` | PASS | Confirms `requests.request(..., allow_redirects=True)` follows a redirect+cookie chain within a single `fetch_url` call and returns the *final* response, not the 302 — matches a common real CTF "cookie wall before the flag" pattern. |
+| Port sweep across one open (banner-emitting) port and two closed/adjacent ports | `port_scan` | PASS | Correctly reported the open port's banner (`SSH-2.0-OpenSSH_9.6p1`, a synthetic banner shaped like a real SSH version string) and the other two as `closed/filtered`. |
+| **Real picoCTF / organizer target** | — | **not yet run** | Needs a live host:port handed over manually — picoCTF challenge instances are per-account/per-session (start an instance from their web UI), and no organizer challenge IP exists yet. The scenarios above close the *mechanical* risk (do the tools work against realistic shapes); this row is the remaining "does it work against something we don't control" risk. |
+
+Also stress-tested (offline, no server needed): `extract_allowed_hosts` (the host-allowlist
+guard in `agent/graph.py`) against additional real-world phrasings (`"Target:
+10.0.0.7:4000"`, `"Connect to service.chal.ctf:9999"`, `"The box is 172.16.5.20 (port
+31337)"`) — all extracted correctly, no regex gap found, see `evals/test_tools_smoke.py`.
+
 # Practice Runs — Model Comparison
 
 Results from running the 4 `agent/graph.py` test cases (echo, echo+early-exit-on-flag,
