@@ -6,7 +6,13 @@ Written for beginners: exact commands, exact files, in order. If a step errors o
 
 **Important context shift:** this isn't a "build a startup demo" hackathon — it's scored on whether your agent actually solves CTF challenges (web, crypto, forensics, misc, pwn, reversing) autonomously or semi-autonomously. Everything below is written for that.
 
-**Status update — the agent core is no longer a blank scaffold.** `agent/graph.py` has a working, tested ReAct loop with two real generic tools (`find_flag_pattern`, `identify_and_decode`) plus vault search (`search_vault`), verified end-to-end including multi-step tool chaining. The default model is `gemini-3.5-flash-lite` (get a free key at aistudio.google.com — this is the specific one that works, not just any Gemini model, see `CLAUDE.md`'s Current Status section for why). Rashid: you're adding tools *into* a proven loop now, not building the loop. Hasif: there's a real backend to point your dashboard at instead of the stub.
+**Status update — the agent core is well past a blank scaffold now.** `agent/graph.py` runs a full **triage → think → act → observe → trim_context** loop: it classifies each challenge into a category first (web/crypto/pwn/reverse/forensics/malware/osint/misc/ai-ml/blue-team), then reasons with tools tailored to that category, and caps its own context so it doesn't grow unbounded on long runs. Tools so far: `find_flag_pattern`, `identify_and_decode`, `search_vault` (the team's own notes — this is where your `vault/` category notes and Farhan's real content matter), and `search_skills` (a much bigger addition: **14 vetted third-party technique-reference packs are already installed** under `.agents/skills/` — 11 offensive, covering web/crypto/pwn/reverse/forensics/malware/osint/misc/ai-ml, plus 3 defensive/blue-team ones (incident-response reports, SIEM detection rules, SOAR playbooks), all read directly and vetted, logged in `SKILLS_VETTING.md`). The default model is `gemini-3.5-flash-lite` (get a free key at aistudio.google.com — this is the specific one that works, not just any Gemini model, see `CLAUDE.md`'s Current Status section for why). There's also a one-command demo (`python -m demo.run_demo`) that solves a seeded challenge end to end — a good thing to look at to see exactly what the agent's input/output shape looks like.
+
+**Important shift for Rashid specifically:** two of the four tools originally on your list (`identify_and_decode`, `find_flag_pattern`) are already built and tested — don't re-build them. Your job is now mostly: pick categories, validate the agent actually solves real picoCTF challenges in them (the skill packs give it technique knowledge, but nobody's confirmed it converts that into actually finding flags on real challenges yet), and build whatever connection tool your categories still need (`fetch_page` for web, `extract_metadata` for forensics).
+
+**Important shift for Hasif:** there's a real agent to point at now, but not yet a real *API* to point at — `agent/graph.py` is a Python/LangGraph loop, and your dashboard is Next.js, so something has to bridge them (Next.js can't import Python directly). That bridge (a small FastAPI wrapper) isn't built yet — check with whoever owns the agent core before you wire past the stub, so you're not guessing at a contract that might still change.
+
+**A note on how this actually gets used on the day:** this is a semi-autonomous *copilot*, not something that scans a CTF platform unattended. An operator (any of you) still looks at the challenge, copies whatever's relevant (page source, a captured request, a file's contents) and pastes it into the dashboard — the agent's job is reasoning over what it's given, decoding/grounding/spotting the flag, not independently going out and finding challenges to attack. `fetch_page` would let it fetch a URL *you hand it*, not browse on its own. Worth getting the organizers' actual autonomy requirements confirmed (still an open question) since it affects how much more "reach out and touch the target" tooling is worth building.
 
 Everyone: install **Git** first if you don't have it, then:
 ```
@@ -30,36 +36,31 @@ git push -u origin [your-branch-name]
 ### Step 0 — Pick your categories (do this with the team first, ~20 min)
 CTF challenges are usually grouped into: **Web, Crypto, Forensics, OSINT/Misc, Reversing, Pwn (binary exploitation)**. Pwn and Reversing take the longest to get good at (low-level, assembly-heavy) — for a beginner team, it's usually smarter to go deep on 2–3 categories than spread thin across all 6. A common strong beginner combo: **Web + Crypto + Forensics/Misc**. Decide this as a team before building tools — it changes everything below.
 
+There's now also a **blue-team/defensive option** if the organizers' rules allow it or include that kind of challenge: 3 skill packs already cover incident-response report writing, SIEM detection-rule authoring, and SOAR playbook design. Worth a look even if you don't pick it as a main category — some "forensics" challenges are really disguised blue-team tasks (here's a log, what happened).
+
+**Before you write a single new tool, check what's already covered.** `.agents/skills/` has 14 vetted technique-reference packs (11 offensive matching the categories above, one per category, plus the 3 blue-team ones) and the agent can already search them at runtime via `search_skills` — that's a lot of the "what should I try" knowledge already there, grounded and tested. Your actual gap to fill is *connection* tools (getting challenge data INTO the agent) and validating it all works end-to-end on real challenges, not re-deriving technique knowledge that already exists.
+
 ### Setup (~15 min)
 1. Install Python 3.11+ (python.org). Check: `python --version`
 2. Get a free API key: Google AI Studio (aistudio.google.com) or Groq (console.groq.com)
-3. Create `agent/.env`:
+3. Create `.env` **at the repo root** (not inside `agent/` — that was a stale instruction; `load_dotenv()` looks for it at the top level):
    ```
    GOOGLE_API_KEY=your_key_here
    ```
 4. Install packages:
    ```
-   pip install langchain langchain-google-genai python-dotenv requests
+   pip install -r requirements.txt
    ```
 
-### Your actual task — define the agent's tools
-For whichever categories you picked, write a tool spec (what it takes in, what it returns) for each. These are standard, publicly documented CTF technique categories — not attack code against real systems, just wrappers/parsers around well-known open tools:
+### Your actual task — build the remaining connection tools
+`identify_and_decode` and `find_flag_pattern` are **already built and tested** (`agent/tools/`) — don't redo these. What's left, for whichever categories you picked:
 
 **If doing Web:**
 ```
 Tool: fetch_page
 Input: { "url": string }
 Output: { "html": string, "headers": object, "status": int }
-(wraps a simple `requests.get()` — lets the agent inspect a challenge site)
-```
-
-**If doing Crypto:**
-```
-Tool: identify_and_decode
-Input: { "text": string }
-Output: { "likely_encoding": string, "decoded": string }
-(tries common encodings — base64, hex, rot13 — and reports what worked;
-CyberChef's "Magic" feature is the well-known reference implementation of this idea)
+(wraps a simple `requests.get()` — lets the agent inspect a challenge site you point it at)
 ```
 
 **If doing Forensics/Misc:**
@@ -70,32 +71,14 @@ Output: { "metadata": object }
 (wraps exiftool or Python's `Pillow`/`exifread` to pull hidden metadata from images/files)
 ```
 
-**All categories need this one:**
-```
-Tool: find_flag_pattern
-Input: { "text": string }
-Output: { "candidates": [string] }
-(regex search for the flag format the organizers announce, e.g. flag{...} or CTF{...})
-```
+Follow the pattern already established in `agent/tools/` (a `@tool`-decorated function with a clear docstring, e.g. `agent/tools/identify_and_decode.py`) so it plugs into `agent/graph.py`'s `TOOLS` list the same way the existing ones do.
 
 ### Test each tool in isolation
-Write a small script per tool, e.g. `agent/tools/test_decode.py`:
-```python
-from dotenv import load_dotenv
-load_dotenv()
-
-def identify_and_decode(text: str) -> dict:
-    import base64
-    try:
-        decoded = base64.b64decode(text).decode()
-        return {"likely_encoding": "base64", "decoded": decoded}
-    except Exception:
-        pass
-    return {"likely_encoding": "unknown", "decoded": text}
-
-print(identify_and_decode("SGVsbG8gQ1RG"))
+`evals/test_tools_smoke.py` already does this for the existing tools (a known-good input, a known-bad input, an assertion on each) — add a matching block for whatever you build, in the same style, rather than a separate throwaway script. Run it with:
 ```
-Run with `python agent/tools/test_decode.py`, confirm it prints something sensible, then move to the next tool.
+python -m evals.test_tools_smoke
+```
+Confirm it prints something sensible and no assertion fails, then wire your new tool into `agent/graph.py`'s `TOOLS` list so the loop can actually call it.
 
 ### Evals — test against real, public practice challenges
 Don't invent your own test cases — pull 5–8 **beginner-level** challenges from picoCTF (picoctf.org, free, public, designed for exactly this) matching your chosen categories, and confirm your tools + agent loop can actually get to the flag on those before relying on them in the real competition. Log results in `evals/practice_runs.md`:
@@ -104,7 +87,7 @@ Don't invent your own test cases — pull 5–8 **beginner-level** challenges fr
 ```
 
 ### Done =
-Tool specs written for your chosen categories, each tested standalone, and at least 5 practice picoCTF challenges attempted with results logged.
+Categories picked as a team, remaining connection tool(s) built and wired into `agent/graph.py`'s `TOOLS` list, each tested standalone, and at least 5 practice picoCTF challenges attempted through the *actual agent loop* (not just the tool in isolation) with results logged in `evals/practice_runs.md`.
 
 ---
 
@@ -169,13 +152,15 @@ Tool specs written for your chosen categories, each tested standalone, and at le
      );
    }
    ```
-6. Once Rashid's real tool-calling agent is ready, swap the `api:` URL to point at it — no other UI changes needed.
+6. **The real agent is Python (LangGraph), not JS** — `app/api/agent/route.ts` can't just import it directly. It needs a small HTTP bridge (a FastAPI server wrapping `agent/graph.py`) for your route to call instead. That bridge isn't built yet as of this handoff — keep building against the stub, and check in before you wire past it so you're calling a real, agreed contract (e.g. `POST /solve {prompt} -> {category, steps, flag, tool_calls}`) instead of guessing at one that might change.
 
 ### Polish checklist
 - [ ] Show which tool the agent is currently calling (even a simple label like "Calling: identify_and_decode…")
 - [ ] Big, obvious "Flag found:" box with a copy button — judges/teammates should spot the result instantly
 - [ ] Loading state while the agent works (some CTF tool calls take a few seconds)
 - [ ] Keep it readable on a projector — large text, high contrast
+
+Look at `demo/expected_transcript.txt` for what a real tool-call trace actually looks like (tool name, args, result, final flag) — useful for shaping your UI's fields even before the real API bridge exists.
 
 ### Done =
 You can paste a challenge, hit "Run Agent," see step-by-step trace text appear, and a flag clearly displayed, pushed to your branch.
@@ -187,6 +172,8 @@ You can paste a challenge, hit "Run Agent," see step-by-step trace text appear, 
 **Your job in one sentence:** build the reference library the whole team (and eventually the agent itself, via Obsidian) leans on during the competition — organized by CTF category, with known tools and beginner-safe study resources. No laptop needed; everything below works from your phone in Obsidian.
 
 This isn't busywork — a well-organized knowledge base is a real competitive advantage in CTF: most challenges are solved faster by recognizing "oh, this is a classic X pattern" than by cleverness on the spot. You're building the team's pattern library.
+
+**Your notes aren't redundant with the 14 third-party skill packs already installed** (`.agents/skills/`) — the agent checks your vault notes *first*, before the broader third-party library, specifically because team/event-specific notes (this CTF's own quirks, what actually worked in practice today) matter more than generic technique references. You're the "what we've actually learned so far" layer; the skill packs are the "general reference" layer underneath it.
 
 ### Setup (~10 min)
 1. Download **Obsidian** (free) from the App Store / Play Store.
@@ -241,7 +228,7 @@ Since we don't yet know if there's a presentation component, spend only ~15 minu
 
 ### During the competition
 - Keep `Web.md` / `Crypto.md` / etc. open and be the person who says "wait, that error looks like a classic X" — you'll often recognize patterns faster than teammates heads-down in code.
-- Share vault notes into the team chat periodically (select note text → Share) so whoever's on a laptop can paste into the repo's `vault/` folder, where they're available to the team and, once wired up, to the agent itself as retrievable reference material.
+- Share vault notes into the team chat periodically (select note text → Share) so whoever's on a laptop can paste into the repo's `vault/` folder — this is already wired up: the agent searches `vault/*.md` itself via `search_vault` (checked before the generic skill packs), so anything you add there is live, retrievable reference material as soon as it's committed, not just team reading material.
 
 ### Done =
 2–3 category notes fully filled in (not placeholders), `RedTeam_Basics.md` done, `Pitch_Backup.md` done as insurance, all shared with the team at least once before the competition day.
