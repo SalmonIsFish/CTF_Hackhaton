@@ -15,7 +15,7 @@ Endpoints:
 import json
 import os
 from functools import lru_cache
-from typing import Iterator
+from typing import Iterator, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +41,11 @@ app.add_middleware(
 class SolveRequest(BaseModel):
     prompt: str
     provider: str = "google"
+    # Optional dashboard convenience: a host/IP/host:port the challenge targets. When set,
+    # it's folded into the prompt text (not carried as separate graph state) so it flows
+    # through the same extract_allowed_hosts() path in agent/graph.py that a plain-text
+    # mention would — one source of truth for the allowlist, not two to keep in sync.
+    target: Optional[str] = None
 
 
 @lru_cache(maxsize=None)
@@ -48,7 +53,9 @@ def get_app_for_provider(provider: str):
     return build_graph(provider)
 
 
-def initial_state(prompt: str) -> dict:
+def initial_state(prompt: str, target: Optional[str] = None) -> dict:
+    if target:
+        prompt = f"Target: {target}\n\n{prompt}"
     return {
         "messages": [HumanMessage(content=prompt)],
         "steps": 0,
@@ -74,7 +81,7 @@ def solve(request: SolveRequest) -> dict:
 
     try:
         result = graph.invoke(
-            initial_state(request.prompt),
+            initial_state(request.prompt, request.target),
             config={"recursion_limit": MAX_STEPS * 4 + 2},
         )
     except Exception as exc:  # noqa: BLE001 - surface as a clean 500, not a stack trace to the dashboard
@@ -116,7 +123,7 @@ def solve_stream(request: SolveRequest) -> StreamingResponse:
 
         try:
             for update in graph.stream(
-                initial_state(request.prompt),
+                initial_state(request.prompt, request.target),
                 config={"recursion_limit": MAX_STEPS * 4 + 2},
                 stream_mode="updates",
             ):

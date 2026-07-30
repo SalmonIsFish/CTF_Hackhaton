@@ -13,8 +13,8 @@ from typing import List
 
 from langchain_core.tools import tool
 
-CONNECT_TIMEOUT_SECONDS = 0.6
-BANNER_TIMEOUT_SECONDS = 0.8
+CONNECT_TIMEOUT_SECONDS = 1.0
+BANNER_TIMEOUT_SECONDS = 1.5
 MAX_BANNER_BYTES = 256
 MAX_PORTS = 50
 

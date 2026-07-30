@@ -32,12 +32,18 @@ in `evals/practice_runs.md`.
   `host:port`, `http(s)://host:port`, and parenthetical-port forms; see
   `evals/test_tools_smoke.py`.
 - [x] Log every result in `evals/practice_runs.md`. **Done.**
-- [ ] Pull 3–5 real network-based challenges (picoCTF-style `nc`/web-IP challenges are the
-  working assumption) and run each through the full agent loop. **Still open** — picoCTF
-  instances are per-account/per-session (an instance host:port only exists after someone
-  starts it from their web UI), and no organizer challenge IP exists yet, so this specific
-  bullet needs a human to hand over a real target. Everything else above used local stand-ins
-  built to stress the same gaps.
+- [x] Real (non-localhost) internet target — **PASS** — `python -m evals.real_target_check`
+  against `scanme.nmap.org` (nmap's own public scanning-practice box). Port-state detection
+  was solid both runs; SSH's version banner was never captured even after widening
+  `port_scan`'s timeouts (now the shipped default) — a real, honest limitation: banner
+  capture is best-effort against a real host, unlike the instant response a local test
+  server gives. Full write-up in `evals/practice_runs.md`.
+- [ ] Pull 3–5 real *network-based CTF challenges* (picoCTF-style `nc`/web-IP challenges are
+  the working assumption) and run each through the full agent loop. **Still open** —
+  `scanme.nmap.org` above closed the "does this work against a real non-localhost host" risk;
+  this is specifically "does it work against an actual scored/CTF-shaped service," which needs
+  a human to hand over a real target — picoCTF instances are per-account/per-session, and no
+  organizer challenge IP exists yet.
 
 Owner: you, ideally with Rashid once he's back (see Phase 3).
 
@@ -82,11 +88,14 @@ a while, so there's nothing left blocking him.
   (competition machine runs Windows, nmap isn't installed there, and installing it is its own
   unstarted task). Worth revisiting only if nmap gets installed on the actual competition
   machine before the event and there's still time to wrap/test it.
-- [ ] Optional `target` field on `SolveRequest` (`agent/api.py`), purely as a dashboard
-  convenience.
-- [ ] Multi-API-key rotation/fallback across teammates' keys — discussed as competition-day
-  insurance, not built. Low priority given the 500 RPD headroom already found on the
-  current default (`gemini-3.5-flash-lite`).
+- [x] ~~Optional `target` field on `SolveRequest`~~ — done. Folds into the prompt text
+  (`Target: {target}\n\n{prompt}`) rather than separate graph state, so it flows through the
+  same `extract_allowed_hosts()` path a plain-text mention would.
+- [x] ~~Multi-API-key rotation/fallback~~ — done. `GOOGLE_API_KEYS` (comma-separated, see
+  `.env.example`) rotates to the next teammate's key on a real `429`/`RESOURCE_EXHAUSTED`
+  from Gemini; falls back to the single `GOOGLE_API_KEY` if unset, so nobody's `.env` needed
+  to change. Verified with stubbed models in `evals/test_model_router_smoke.py` (no real quota
+  exhaustion needed to test the logic).
 - [ ] An actual rehearsed screen recording of the demo — ideally showing a real network
   solve once Phase 1 lands, not just the synthetic local-server one.
   `demo/expected_transcript.txt` is a text placeholder, not a substitute.
