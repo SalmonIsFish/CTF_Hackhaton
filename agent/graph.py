@@ -1,7 +1,14 @@
 import re
 from typing import Annotated, Optional, Sequence, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -14,6 +21,12 @@ from agent.tools.search_vault import search_vault
 
 MAX_STEPS = 15
 FLAG_PATTERN = re.compile(r"\w+\{[^{}]+\}")
+
+# State & Context Management: cap how many think/act messages accumulate in a
+# long run. The original SystemMessage and the first HumanMessage (the actual
+# challenge prompt) are always kept — everything else is a think/act/observe
+# exchange, and once there are more of those than this, the oldest are dropped.
+MAX_CONTEXT_MESSAGES = 16
 
 
 def message_text(message: BaseMessage) -> str:
@@ -29,6 +42,32 @@ def message_text(message: BaseMessage) -> str:
             if isinstance(block, dict) and block.get("type") == "text"
         )
     return str(content)
+
+
+def trim_context(state: "AgentState") -> dict:
+    """Drop the oldest think/act messages once there are more than
+    MAX_CONTEXT_MESSAGES of them, keeping the loop's context bounded on long
+    runs. The leading SystemMessage and the first HumanMessage are never
+    trimmed — they anchor what the task actually is. Uses RemoveMessage so the
+    add_messages reducer deletes by id instead of appending."""
+    messages = state["messages"]
+    if not messages:
+        return {}
+
+    anchor_ids = set()
+    if isinstance(messages[0], SystemMessage):
+        anchor_ids.add(messages[0].id)
+    first_human = next((m for m in messages if isinstance(m, HumanMessage)), None)
+    if first_human is not None:
+        anchor_ids.add(first_human.id)
+
+    trimmable = [m for m in messages if m.id not in anchor_ids]
+    overflow = len(trimmable) - MAX_CONTEXT_MESSAGES
+    if overflow <= 0:
+        return {}
+
+    return {"messages": [RemoveMessage(id=m.id) for m in trimmable[:overflow]]}
+
 
 # Sub-agent routing: maps a triage category to the installed skill-pack directory
 # name(s) under .agents/skills/ that hold the relevant technique reference notes.
@@ -74,14 +113,17 @@ def build_system_prompt(category: str) -> SystemMessage:
         grounding = "No specific category matched — reason from the tools available."
     return SystemMessage(
         content=(
-            "You are a CTF-solving assistant. The team keeps curated CTF knowledge notes "
-            "(techniques, common flag locations, cheat sheets) in a vault of Markdown files, "
-            "and a separate library of vetted technique-reference skill packs (offensive "
-            "categories plus defensive/blue-team ones) under .agents/skills/. Before answering "
-            "a technique or 'what should I check' style question from your own general "
-            "knowledge, call search_vault and/or search_skills to check whether curated notes "
-            "already cover it, and ground your answer in what they return when they do.\n\n"
-            + grounding
+            "You are a CTF-solving assistant with two knowledge-lookup tools, checked in this "
+            "order:\n"
+            "1. search_vault — the team's own curated notes for THIS event (techniques already "
+            "found to matter, common flag locations, cheat sheets). Always check this first for "
+            "a technique or 'what should I check' style question.\n"
+            "2. search_skills — a broader third-party technique-reference library under "
+            ".agents/skills/, covering both offensive categories and defensive/blue-team ones. "
+            "Use this when search_vault doesn't cover the question, or to go deeper on a "
+            "technique the vault only mentions in passing.\n"
+            "Never answer a technique question from general knowledge alone without checking "
+            "search_vault first.\n\n" + grounding
         )
     )
 
@@ -151,19 +193,21 @@ def build_graph(provider: str = "google"):
     def route_after_observe(state: AgentState) -> str:
         if state.get("flag") or state["steps"] >= MAX_STEPS:
             return END
-        return "think"
+        return "trim_context"
 
     graph = StateGraph(AgentState)
     graph.add_node("triage", triage)
     graph.add_node("think", think)
     graph.add_node("act", act)
     graph.add_node("observe", observe)
+    graph.add_node("trim_context", trim_context)
 
     graph.set_entry_point("triage")
     graph.add_edge("triage", "think")
     graph.add_conditional_edges("think", route_after_think, {"act": "act", END: END})
     graph.add_edge("act", "observe")
-    graph.add_conditional_edges("observe", route_after_observe, {"think": "think", END: END})
+    graph.add_conditional_edges("observe", route_after_observe, {"trim_context": "trim_context", END: END})
+    graph.add_edge("trim_context", "think")
 
     return graph.compile()
 
@@ -175,9 +219,10 @@ def run_case(app, prompt: str) -> AgentState:
         "flag": None,
         "category": None,
     }
-    # One triage step, then each loop iteration visits think -> act -> observe
-    # (3 graph steps), so give recursion_limit enough headroom for MAX_STEPS iterations.
-    final_state = app.invoke(initial_state, config={"recursion_limit": MAX_STEPS * 3 + 2})
+    # One triage step, then each loop iteration visits think -> act -> observe ->
+    # trim_context (4 graph steps), so give recursion_limit enough headroom for
+    # MAX_STEPS iterations.
+    final_state = app.invoke(initial_state, config={"recursion_limit": MAX_STEPS * 4 + 2})
     for message in final_state["messages"]:
         message.pretty_print()
     print("category:", final_state["category"])

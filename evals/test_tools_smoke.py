@@ -1,3 +1,6 @@
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+
+from agent.graph import MAX_CONTEXT_MESSAGES, trim_context
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.search_skills import search_skills
@@ -36,3 +39,30 @@ print("\n=== search_skills: term not present anywhere in installed skills ===")
 skills_not_found = search_skills.invoke({"query": "zzz_definitely_not_in_skills_zzz"})
 print(skills_not_found)
 assert "No matches" in skills_not_found, "expected clean no-match message"
+
+print("\n=== trim_context: under threshold, expect no-op ===")
+small_state = {
+    "messages": [HumanMessage(content="hi", id="human-1")]
+    + [AIMessage(content=f"turn {i}", id=f"msg-{i}") for i in range(4)],
+}
+small_result = trim_context(small_state)
+print(small_result)
+assert small_result == {}, "expected no trimming below MAX_CONTEXT_MESSAGES"
+
+print("\n=== trim_context: over threshold, expect oldest non-anchor messages removed ===")
+overflow = 5
+trimmable_count = MAX_CONTEXT_MESSAGES + overflow
+big_messages = [HumanMessage(content="the actual challenge prompt", id="human-1")]
+big_messages += [
+    ToolMessage(content=f"tool result {i}", name="echo", tool_call_id=f"call-{i}", id=f"msg-{i}")
+    for i in range(trimmable_count)
+]
+big_state = {"messages": big_messages}
+big_result = trim_context(big_state)
+print(big_result)
+removed_ids = {rm.id for rm in big_result["messages"]}
+assert all(isinstance(m, RemoveMessage) for m in big_result["messages"]), "expected only RemoveMessage entries"
+assert "human-1" not in removed_ids, "the first HumanMessage (the challenge prompt) must never be trimmed"
+assert removed_ids == {f"msg-{i}" for i in range(overflow)}, (
+    f"expected exactly the oldest {overflow} trimmable messages removed, got {removed_ids}"
+)
