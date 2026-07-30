@@ -18,8 +18,9 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 ### What's built and working
 - `agent/model_router.py` — `get_model(provider)` for anthropic/google/groq, lazy-loaded via LangChain's `init_chat_model`, keys from `.env`
 - `agent/graph.py` — LangGraph ReAct loop (think → act → observe), `MAX_STEPS = 15`, exits early when a tool result matches the flag pattern or the model returns no tool call. Includes a `SystemMessage` instructing the model to actively use tools — especially `search_vault` — rather than answering from its own general knowledge.
-- Tools in `agent/tools/`: `echo` (dummy, still in place), `find_flag_pattern` (regex for `flag{...}`/`CTF{...}`), `identify_and_decode` (base64/hex/rot13 — rot13 always "succeeds" on alphabetic input, documented in its own docstring/description), `search_vault` (substring search across `vault/*.md`, returns filename + line + context)
+- Tools: `echo` (dummy, defined inline in `agent/graph.py`, not its own file), plus in `agent/tools/`: `find_flag_pattern` (regex for `flag{...}`/`CTF{...}`), `identify_and_decode` (base64/hex/rot13 — rot13 always "succeeds" on alphabetic input, documented in its own docstring/description), `search_vault` (substring search across `vault/*.md`, returns filename + line + context)
 - `.mcp.json` — wired to **seekstone** (filesystem-based, no Obsidian app or plugin needed). Note: the original plan referenced `mcpvault`, which turned out to be placeholder text, not a real npm package — corrected to seekstone. **Not yet security-reviewed** — community-published, has read+write vault access. Worth a look at github.com/shaqmughal/seekstone before leaning on it for anything sensitive.
+- `.agents/skills/` — 11 third-party CTF technique-reference skill packs installed from `ljagiello/ctf-skills` (`npx skills add`), plus `SKILLS_VETTING.md` (full vetting log) and `skills-lock.json` (hash-pinned source manifest). Automated scanners flagged `ctf-web` and `ctf-osint` "Critical," but both a manual file grep at install time and a follow-up spot-check (this session) found no obfuscation, credential exfiltration, or base64 payload blobs — every `/etc/passwd`-style hit is standard LFI/traversal documentation. Team decision: keep all 11 installed. See `SKILLS_VETTING.md` for full detail.
 - `evals/test_tools_smoke.py` — standalone tests for all three real tools, passing
 - `agent/graph.py`'s `__main__` block — 4 end-to-end test cases, **all passing** as of tonight on `gemini-3.5-flash-lite`:
   1. Plain echo (baseline loop works)
@@ -40,6 +41,7 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 - Windows console may show `�` for em-dashes — cosmetic terminal encoding, not file corruption (confirmed the underlying files are clean UTF-8).
 
 ### Not yet done
+- ~~Closer read of `ctf-web`/`ctf-osint` skill packs~~ — done this session, confirmed vetting log's conclusion (no red flags found)
 - Rashid hasn't started — categories not yet locked (Web + Crypto + Forensics is the working assumption from earlier planning, not confirmed)
 - Hasif hasn't started — but there's now a real, tested agent to point the dashboard at instead of a stub
 - Farhan's real vault content not yet in `vault/` (only the placeholder `README.md` and test-fixture `Web_Placeholder.md` exist)
@@ -152,11 +154,15 @@ CTF_Hackhaton/
 ├── .gitignore
 ├── requirements.txt
 ├── .mcp.json              ← seekstone (Obsidian vault access for Claude Code)
+├── SKILLS_VETTING.md      ← vetting log for third-party skills.sh installs
+├── skills-lock.json       ← hash-pinned source manifest for installed skills
+├── .agents/
+│   └── skills/            ← 11 CTF technique-reference skill packs (ljagiello/ctf-skills)
 ├── agent/
 │   ├── model_router.py    ← done, verified
 │   ├── graph.py           ← done, verified — ReAct loop + system prompt, 4 passing test cases in __main__
+│   │                         (echo tool is defined inline here, not as its own file)
 │   └── tools/
-│       ├── echo.py                  (dummy, still present alongside real tools)
 │       ├── find_flag_pattern.py     ← done, verified
 │       ├── identify_and_decode.py   ← done, verified
 │       └── search_vault.py          ← done, verified
