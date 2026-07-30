@@ -33,6 +33,7 @@ Every sub-agent and tool you add should map back to one of those four parts — 
   3. Double-encoded flag (base64 of hex) → confirms **multi-step tool chaining** across loop iterations, not just single calls
   4. Vault lookup question → confirms the model calls `search_vault` (not just answering from training data) and grounds its answer in `vault/Web_Placeholder.md`
   5. RSA-attack question → confirms **sub-agent triage routes to `category: crypto`**, the model calls `search_skills`, and the answer is grounded in a real technique from `ctf-crypto`'s RSA attack notes (Wiener/Coppersmith/common modulus/low exponent)
+- `demo/` — harness element #9 (Deploy/Demo Readiness). `python -m demo.run_demo` is the one-command entrypoint: fails fast with a clear message if `GOOGLE_API_KEY` isn't set (instead of a confusing API error mid-run), solves the seeded `response_headers.txt` challenge (a captured HTTP response with a base64-of-hex flag in a custom header — deliberately solvable with only the tools that already exist, no live target or network dependency), and exits `1` if no flag was found so a regression shows up as a failing command before demo day. `expected_transcript.txt` is a captured successful run, checked in as a **text fallback** if live tools flake on stage — **still need an actual rehearsed screen recording before the event**, this transcript is a placeholder until that's done, not a replacement for it.
 
 ### Model choice — hard-won today, don't relitigate without new evidence
 - **Default is `gemini-3.5-flash-lite`** (Google), not `gemini-flash-latest`/`gemini-3.6-flash` — that one only has a 20-requests/day free quota and gets exhausted fast. `gemini-3.5-flash-lite` has 500/day and passed all 5 cases including chaining and sub-agent triage.
@@ -177,18 +178,25 @@ CTF_Hackhaton/
 ├── SKILLS_VETTING.md      ← vetting log for third-party skills.sh installs
 ├── skills-lock.json       ← hash-pinned source manifest for installed skills
 ├── .agents/
-│   └── skills/            ← 11 CTF technique-reference skill packs (ljagiello/ctf-skills)
+│   └── skills/            ← 14 third-party skill packs: 11 offensive (ljagiello/ctf-skills)
+│                             + 3 defensive/blue-team (arttapon1/defensive-soc-skills)
 ├── agent/
 │   ├── model_router.py    ← done, verified
-│   ├── graph.py           ← done, verified — ReAct loop + system prompt, 4 passing test cases in __main__
-│   │                         (echo tool is defined inline here, not as its own file)
+│   ├── graph.py           ← done, verified — triage → think → act → observe → trim_context loop,
+│   │                         5 passing test cases in __main__ (echo tool defined inline here)
 │   └── tools/
 │       ├── find_flag_pattern.py     ← done, verified
 │       ├── identify_and_decode.py   ← done, verified
-│       └── search_vault.py          ← done, verified
+│       ├── search_vault.py          ← done, verified
+│       └── search_skills.py         ← done, verified — connects .agents/skills/ to the runtime agent
+├── demo/                  ← harness element #9 (Deploy/Demo Readiness)
+│   ├── run_demo.py            ← one-command entrypoint: `python -m demo.run_demo`
+│   ├── response_headers.txt   ← seeded demo challenge, solvable offline with existing tools
+│   ├── expected_transcript.txt ← captured successful run, text fallback until a real recording exists
+│   └── README.md
 ├── frontend/              ← not started (Hasif's part)
 ├── evals/
-│   ├── test_tools_smoke.py   ← standalone tool tests, passing
+│   ├── test_tools_smoke.py   ← standalone tool tests + trim_context unit test, passing
 │   └── practice_runs.md      ← model comparison findings + picoCTF results go here
 └── vault/
     ├── README.md              ← placeholder, explains folder purpose

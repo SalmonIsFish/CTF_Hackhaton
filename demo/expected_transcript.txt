@@ -1,0 +1,15 @@
+=== Solving: response_headers.txt ===
+
+--- Tool calls made ---
+  find_flag_pattern({'text': 'HTTP/1.1 200 OK\nDate: Thu, 30 Jul 2026 14:02:11 GMT\nServer: nginx/1.18.0\nContent-Type: text/html; charset=utf-8\nX-Powered-By: Express\nX-Flag: NjY2YzYxNjc3YjY0NjU2ZDZmNWY3MjY1NjE2NDc5N2Q=\nSet-Cookie: session=8f3a1c9e2b7d4f10; HttpOnly; SameSite=Lax\nCache-Control: no-store\nContent-Length: 1842\nConnection: keep-alive'})
+    -> No flag pattern found.
+  identify_and_decode({'text': 'NjY2YzYxNjc3YjY0NjU2ZDZmNWY3MjY1NjE2NDc5N2Q='})
+    -> base64: 666c61677b64656d6f5f72656164797d
+rot13: AwL2LmLkAwp3LwL0AwH2MQMzAJL3ZwL1AwR2AQp5A2D=
+  identify_and_decode({'text': '666c61677b64656d6f5f72656164797d'})
+    -> hex: flag{demo_ready}
+rot13: 666p61677o64656q6s5s72656164797q
+
+Category : web
+Steps    : 3
+Flag     : flag{demo_ready}
