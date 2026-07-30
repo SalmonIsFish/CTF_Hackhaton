@@ -46,7 +46,7 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 - Hasif hasn't started — but there's now a real, tested agent to point the dashboard at instead of a stub
 - Farhan's real vault content not yet in `vault/` (only the placeholder `README.md` and test-fixture `Web_Placeholder.md` exist)
 - Multi-API-key rotation/fallback (pooling teammates' keys with automatic failover) — discussed as competition-day insurance, not built yet, low priority given 500 RPD headroom already found on the current default
-- `ANTHROPIC_API_KEY` line is entirely absent from `.env` (not just empty) — confirm whether that's intentional before assuming the `anthropic` provider in `model_router.py` is usable as a fallback
+- ~~`ANTHROPIC_API_KEY` absent from `.env`~~ — confirmed intentional: the team deliberately runs on the `google` provider only, since it has the highest free-tier request quota of the three (see §2). The `anthropic` entry in `model_router.py` is not expected to be usable without adding a key.
 - Awaiting organizer reply on: network/internet access during competition, presentation vs. flag-only scoring, confirmed categories, autonomy requirements, environment/VM provisioning, team-role rules, submission format
 
 ---
