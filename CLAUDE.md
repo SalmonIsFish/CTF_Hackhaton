@@ -22,7 +22,7 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 - `message_text()` helper in `agent/graph.py` — Gemini sometimes returns `message.content` as a plain string and sometimes as a list of content blocks (thought-signature metadata attached); found this by chasing a real `AttributeError`/silent-`category`-fallback pair while building the triage node. Any code reading a message's final text (test assertions, the triage classifier) must go through this helper, not `.content` directly.
 - **Grounding priority is explicit, not left to chance**: `build_system_prompt()` tells the model to check `search_vault` (the team's own notes) *before* `search_skills` (the broader third-party library) — added after case 4 flaked once with only `search_skills` called (both tools legitimately cover "check response headers", so without an explicit order the model's choice between them isn't deterministic).
 - Tools: `echo` (dummy, defined inline in `agent/graph.py`, not its own file), plus in `agent/tools/`: `find_flag_pattern` (regex for `flag{...}`/`CTF{...}`), `identify_and_decode` (base64/hex/rot13 — rot13 always "succeeds" on alphabetic input, documented in its own docstring/description), `search_vault` (substring search across `vault/*.md`, returns filename + line + context), `search_skills` (same substring-search shape, but across `.agents/skills/**/*.md` — this is what actually connects the 14 vetted skill packs to the competition-day agent; before this, they only helped Claude Code while building, per the distinction called out in §4)
-- `.mcp.json` — wired to **seekstone** (filesystem-based, no Obsidian app or plugin needed). Note: the original plan referenced `mcpvault`, which turned out to be placeholder text, not a real npm package — corrected to seekstone. **Not yet security-reviewed** — community-published, has read+write vault access. Worth a look at github.com/shaqmughal/seekstone before leaning on it for anything sensitive.
+- `.mcp.json` — wired to **seekstone** (filesystem-based, no Obsidian app or plugin needed). Note: the original plan referenced `mcpvault`, which turned out to be placeholder text, not a real npm package — corrected to seekstone. **Security-reviewed this session — clean.** Community-published (16 stars, 1 fork — not on officialskills.sh-style vendor accountability) but genuinely well-engineered: CI, CodeQL, OpenSSF Scorecard, Dependabot all actually running, and — unlike most third-party vetting — the safety claims are backed by real tests, not just docs. Read the source of all 8 write-capable tools (`create_note`, `delete_note`, `move_note`, `append_note`, `patch_note`, `patch_frontmatter`, `replace_in_note`, `periodic_note`): every one independently checks the resolved path stays under `vaultRoot` before touching disk. `no-network.test.ts` mocks Node's raw `net.connect`/`http.request`/`https.request` to throw, then runs every tool including full indexing — proves zero outbound calls, not just "we don't call fetch that we know of." Dependencies are minimal and reputable (`@modelcontextprotocol/sdk`, `chokidar`, `fast-glob`, `minisearch`, `yaml`, `zod`). One caveat worth knowing, not fixing: `.mcp.json` sets `SEEKSTONE_VAULT=./vault`, a relative path, while seekstone's own `--help` documents this var as absolute — `index.ts` uses it as-is with no `path.resolve()`, so this only resolves correctly because Claude Code launches the process with CWD = repo root. Works fine in practice; a hardcoded absolute path would just break portability across teammates' machines instead, so this is a documented tradeoff, not a bug to chase.
 - `.agents/skills/` — **14 third-party skill packs** total, all vetted in `SKILLS_VETTING.md` (full log) with `skills-lock.json` (hash-pinned source manifest):
   - 11 offensive CTF-technique packs from `ljagiello/ctf-skills` (`npx skills add`). Automated scanners flagged `ctf-web` and `ctf-osint` "Critical," but both a manual file grep at install time and a follow-up spot-check found no obfuscation, credential exfiltration, or base64 payload blobs — every `/etc/passwd`-style hit is standard LFI/traversal documentation. Team decision: keep all 11 installed.
   - 3 defensive/blue-team packs from `arttapon1/defensive-soc-skills` (`ir-report-builder`, `siem-detection-engineer`, `soar-playbook-builder`) — added to cover SOC/IR/detection-engineering knowledge the offense-only packs don't have. Content-level review (all 4 scripts + all 3 SKILL.md read directly) came back clean, but this repo has essentially no community track record (7 stars, 7 commits, one author) — accepted for a hackathon project, flagged as a real caveat.
@@ -127,7 +127,7 @@ Obsidian works well here as your agent's **long-term memory / knowledge base**, 
 
 **Update: already set up, using `seekstone`.** The original two options below are kept for context, but `mcpvault` (previously listed) turned out to be placeholder text, not a real package — it 404s on npm. The repo now uses **seekstone** (github.com/shaqmughal/seekstone), a real filesystem-direct server, confirmed connected via `claude mcp list`.
 
-⚠️ **Not yet security-reviewed.** It's community-published (not an official/vendor package) and has read+write access to `vault/`. Per §5's vetting checklist, worth a quick look at its source before the team leans on it for anything sensitive — this was flagged but not yet done as of this handoff.
+✅ **Security-reviewed — clean, see the "What's built and working" bullet above for the full writeup.** It's community-published (not an official/vendor package) with read+write access to `vault/`, but the source backs up its safety claims with actual tests (a dedicated test blocks Node's network primitives and proves the server never phones home) rather than just documentation, and every write-capable tool independently validates paths stay inside the vault. One documented, low-severity caveat: our `.mcp.json` uses a relative `SEEKSTONE_VAULT` path, which only resolves correctly because of Claude Code's launch CWD — works fine in practice, noted for awareness.
 
 Two MCP server options, for reference:
 
@@ -136,13 +136,16 @@ Two MCP server options, for reference:
 | `mcp-obsidian` (REST API plugin-based) | Yes | ~10 min (install community plugin + API key) | Most documented, widest adoption |
 | Filesystem-based server (e.g. `seekstone`) | No — reads the vault folder directly | ~5 min | Faster hackathon setup, no plugin dependency — **this is what's in use** |
 
-`.mcp.json` (project-level, so the whole team's Claude Code sessions pick it up):
+`.mcp.json` (project-level, so the whole team's Claude Code sessions pick it up) — this is the actual file, corrected from an earlier stale example that showed the vault path as a positional CLI arg rather than the `SEEKSTONE_VAULT` env var seekstone actually reads:
 ```json
 {
   "mcpServers": {
     "obsidian": {
       "command": "npx",
-      "args": ["-y", "seekstone", "./vault"]
+      "args": ["-y", "seekstone"],
+      "env": {
+        "SEEKSTONE_VAULT": "./vault"
+      }
     }
   }
 }
