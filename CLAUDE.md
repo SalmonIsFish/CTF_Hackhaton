@@ -13,7 +13,7 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 
 ## Current Status — Session Handoff (last updated: solo build session, agent core complete)
 
-**Read this first if you're a fresh Claude Code session picking this up.** Everything below is verified with real runs, not assumed.
+**Read this first if you're a fresh Claude Code session picking this up.** Everything below is verified with real runs, not assumed. For "what should I actually do next," see **`NEXT_STEPS.md`** instead — this file is the technical reference, that one's the TODO list.
 
 ### What's built and working
 - `agent/model_router.py` — `get_model(provider)` for anthropic/google/groq, lazy-loaded via LangChain's `init_chat_model`, keys from `.env`
@@ -49,25 +49,20 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 - Windows console may show `�` for em-dashes — cosmetic terminal encoding, not file corruption (confirmed the underlying files are clean UTF-8).
 
 ### Not yet done
-- ~~Closer read of `ctf-web`/`ctf-osint` skill packs~~ — done this session, confirmed vetting log's conclusion (no red flags found)
-- Rashid hasn't started — categories not yet locked (Web + Crypto + Forensics is the working assumption from earlier planning, not confirmed)
-- Hasif hasn't started — but there's now a real, tested agent to point the dashboard at instead of a stub
-- ~~No API bridge between the Python agent and a JS frontend~~ — done this session, see `agent/api.py` in "What's built and working."
-- **Current design is a semi-autonomous copilot, not an autonomous scanner.** The agent has no tool that reaches out to a target on its own (no live `nc`/socket tool; `fetch_page`, once Rashid builds it, still requires a human to hand it a URL). An operator pastes/feeds challenge artifacts in; the agent reasons over what it's given. This matches the still-unanswered "autonomy requirements" organizer question below — worth chasing an answer, since it determines how much more "reach out and touch the target" tooling (if any) is worth building before the event.
-- Farhan's real vault content not yet in `vault/` (only the placeholder `README.md` and test-fixture `Web_Placeholder.md` exist)
-- Multi-API-key rotation/fallback (pooling teammates' keys with automatic failover) — discussed as competition-day insurance, not built yet, low priority given 500 RPD headroom already found on the current default
-- ~~`ANTHROPIC_API_KEY` absent from `.env`~~ — confirmed intentional: the team deliberately runs on the `google` provider only, since it has the highest free-tier request quota of the three (see §2). The `anthropic` entry in `model_router.py` is not expected to be usable without adding a key.
-- ~~`scripts/install_ctf_tools.sh all` (the real CTF toolchain: pwntools, radare2, hashcat, angr, Frida, sagemath, etc.)~~ — done this session, on WSL Ubuntu. `bash install_ctf_tools.sh --verify` reports **56/58 found**. The two "missing" are known and not worth chasing further:
-  - `py:ropper` — permanent, unfixable on Python 3.14. Its dependency `filebytes` calls `ast.Str`, a Python API removed in 3.12+; that package is unmaintained upstream. `ROPgadget` (installed, does the same job) is the substitute.
-  - `ffuf` — not actually broken, just not on `$PATH` yet. The Go install put the binary at `~/go/bin/ffuf`; add `export PATH="$PATH:$(go env GOPATH)/bin"` to `~/.bashrc`.
-  Real upstream bugs hit and fixed along the way, worth knowing if re-running this on a fresh machine:
-  - Python 3.14 is too new for several packages to have prebuilt wheels yet (`unicorn`, `angr`'s x86_64 wheel, `yara-python`, etc. for the exact pinned versions), forcing source builds that need `build-essential cmake python3.14-dev libssl-dev zlib1g-dev libjpeg-dev libfreetype6-dev rustc cargo` (angr's own package has a Rust build step) — install all of these up front next time.
-  - `unicorn==2.1.2`'s own CMake build has a real bug: `qemu/osdep.h` gates `sys/mman.h` behind `#ifdef CONFIG_POSIX`, which the CMake path never defines (confirmed by direct source build) — this is why `mprotect`/`PROT_*` errors showed up. Not worth patching directly: `angr`/`qiling`'s looser dependency constraints pull in `unicorn==2.1.4` instead, which ships a working `abi3` wheel (no compile needed).
-  - `pwntools==4.15.0` explicitly excludes `unicorn!=2.1.3,!=2.1.4` in its own metadata, so a plain `pip install pwntools` tries to build the broken 2.1.2 from source. Fix: `pip install --no-deps pwntools==4.15.0`, then install its other real dependencies (paramiko, mako, pyelftools, ropgadget, pyserial, requests, pygments, pysocks, python-dateutil, packaging, psutil, intervaltree, sortedcontainers, six, rpyc, colored_traceback, unix-ar, zstandard) manually. pip will warn about the unicorn version mismatch — harmless; core pwntools features (`ELF`, packing, process/remote I/O) don't touch unicorn at all.
-  - `angr==9.2.193` failed to *import* (not install) due to `pycparser` 3.0 (a new, breaking major release) removing the ability to set `CLexer.filename`, which `angr`'s bundled `pyvex` relies on. Fix: `pip install pycparser==2.23` (last 2.x release).
-  - `fpylll==0.6.4` was missing an undeclared dependency, `cysignals` — `pip install cysignals` fixes it.
-  - All of the above venv work happens inside `~/.ctf-tools/venv` (created by the script itself, since this Ubuntu's Python 3.14 is "externally managed" per PEP 668) — never `pip install` outside it.
-- Awaiting organizer reply on: network/internet access during competition, presentation vs. flag-only scoring, confirmed categories, autonomy requirements, environment/VM provisioning, team-role rules, submission format
+**→ See `NEXT_STEPS.md`** — pulled into its own file so this section doesn't turn into a running task list that drifts out of sync. Short version: teammates haven't started their pieces, and several organizer questions are still unanswered.
+
+### Toolchain setup — resolved issues (reference if setting this up on a fresh machine)
+`scripts/install_ctf_tools.sh all` is fully installed and verified on WSL Ubuntu (`bash install_ctf_tools.sh --verify` reports **56/58 found**). Two items are permanently/trivially not-found, not worth chasing:
+- `py:ropper` — permanent, unfixable on Python 3.14. Its dependency `filebytes` calls `ast.Str`, a Python API removed in 3.12+; that package is unmaintained upstream. `ROPgadget` (installed, does the same job) is the substitute.
+- `ffuf` — not actually broken, just not on `$PATH` yet. The Go install put the binary at `~/go/bin/ffuf`; add `export PATH="$PATH:$(go env GOPATH)/bin"` to `~/.bashrc`.
+
+Real upstream bugs hit and fixed along the way, worth knowing if re-running this on a fresh machine:
+- Python 3.14 is too new for several packages to have prebuilt wheels yet (`unicorn`, `angr`'s x86_64 wheel, `yara-python`, etc. for the exact pinned versions), forcing source builds that need `build-essential cmake python3.14-dev libssl-dev zlib1g-dev libjpeg-dev libfreetype6-dev rustc cargo` (angr's own package has a Rust build step) — install all of these up front next time.
+- `unicorn==2.1.2`'s own CMake build has a real bug: `qemu/osdep.h` gates `sys/mman.h` behind `#ifdef CONFIG_POSIX`, which the CMake path never defines (confirmed by direct source build) — this is why `mprotect`/`PROT_*` errors showed up. Not worth patching directly: `angr`/`qiling`'s looser dependency constraints pull in `unicorn==2.1.4` instead, which ships a working `abi3` wheel (no compile needed).
+- `pwntools==4.15.0` explicitly excludes `unicorn!=2.1.3,!=2.1.4` in its own metadata, so a plain `pip install pwntools` tries to build the broken 2.1.2 from source. Fix: `pip install --no-deps pwntools==4.15.0`, then install its other real dependencies (paramiko, mako, pyelftools, ropgadget, pyserial, requests, pygments, pysocks, python-dateutil, packaging, psutil, intervaltree, sortedcontainers, six, rpyc, colored_traceback, unix-ar, zstandard) manually. pip will warn about the unicorn version mismatch — harmless; core pwntools features (`ELF`, packing, process/remote I/O) don't touch unicorn at all.
+- `angr==9.2.193` failed to *import* (not install) due to `pycparser` 3.0 (a new, breaking major release) removing the ability to set `CLexer.filename`, which `angr`'s bundled `pyvex` relies on. Fix: `pip install pycparser==2.23` (last 2.x release).
+- `fpylll==0.6.4` was missing an undeclared dependency, `cysignals` — `pip install cysignals` fixes it.
+- All of the above venv work happens inside `~/.ctf-tools/venv` (created by the script itself, since this Ubuntu's Python 3.14 is "externally managed" per PEP 668) — never `pip install` outside it.
 
 ---
 
@@ -112,6 +107,8 @@ def get_model(provider: str = "google"):
 **Why not just use Groq as primary despite the free-tier headroom being larger:** raw request quota doesn't matter if the model can't reliably format tool calls. Verified today: Llama models on Groq have a known, reproducible issue emitting malformed tool-call syntax that gets rejected outright. A newer OpenAI-lineage model on Groq (`gpt-oss-120b`) fixed that specific problem but was worse at *multi-step* reasoning (chaining two tool calls in sequence) — which matters more for CTF challenges than raw syntax correctness. Don't assume this is fixed without re-testing; open-model tool-calling reliability is genuinely inconsistent across providers and versions.
 
 You keep Claude Code for orchestration/dev work; the shipped agent runs on whichever provider actually passed the eval suite — check `evals/practice_runs.md` before changing the default.
+
+**`ANTHROPIC_API_KEY` is intentionally absent from `.env`** (not an oversight) — the team deliberately runs on the `google` provider only, since it has the highest free-tier request quota of the three. The `anthropic` entry in `model_router.py` above is not expected to be usable without adding a key.
 
 ## 3. Agent Harness Checklist
 Your brief named 5 elements under "9 Harness Elements" — here's the full 9 so nothing's missed at integration time:
@@ -172,7 +169,8 @@ Before installing any skill from skills.sh:
 ## 6. Repo Structure (as actually built, not just planned)
 ```
 CTF_Hackhaton/
-├── CLAUDE.md              ← this file
+├── CLAUDE.md              ← this file (technical reference: what's built, why, how)
+├── NEXT_STEPS.md          ← the TODO list — what's left, in priority order
 ├── TEAM_TASKS.md          ← detailed per-person task briefs
 ├── .env / .env.example    ← API keys (ANTHROPIC_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY) — .env is gitignored
 ├── .gitignore
