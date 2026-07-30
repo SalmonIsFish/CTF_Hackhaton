@@ -1,5 +1,6 @@
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
+from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
 
 print("=== find_flag_pattern: string containing a flag ===")
@@ -25,3 +26,13 @@ not_found = search_vault.invoke({"query": "zzz_definitely_not_in_vault_zzz"})
 print(not_found)
 assert "Web_Placeholder.md" not in not_found, "unexpected filename in no-match result"
 assert "No matches" in not_found, "expected clean no-match message"
+
+print("\n=== search_skills: known term ('Wiener', present in ctf-crypto's RSA attack notes) ===")
+skills_found = search_skills.invoke({"query": "Wiener"})
+print(skills_found)
+assert "ctf-crypto" in skills_found, "expected a ctf-crypto file in results"
+
+print("\n=== search_skills: term not present anywhere in installed skills ===")
+skills_not_found = search_skills.invoke({"query": "zzz_definitely_not_in_skills_zzz"})
+print(skills_not_found)
+assert "No matches" in skills_not_found, "expected clean no-match message"
