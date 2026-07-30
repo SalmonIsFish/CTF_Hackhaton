@@ -44,6 +44,26 @@ def message_text(message: BaseMessage) -> str:
     return str(content)
 
 
+def extract_tool_trace(messages: Sequence[BaseMessage]) -> list[dict]:
+    """Pair each AIMessage tool call with its matching ToolMessage result (by
+    tool_call_id) into a flat, JSON-friendly trace: [{name, args, result}, ...].
+    Used by the API bridge (agent/api.py) to give the dashboard a structured
+    step-by-step trace instead of a raw message dump."""
+    by_call_id: dict[str, dict] = {}
+    trace: list[dict] = []
+    for message in messages:
+        if isinstance(message, AIMessage) and message.tool_calls:
+            for call in message.tool_calls:
+                entry = {"name": call["name"], "args": call["args"], "result": None}
+                trace.append(entry)
+                by_call_id[call["id"]] = entry
+        elif isinstance(message, ToolMessage):
+            entry = by_call_id.get(message.tool_call_id)
+            if entry is not None:
+                entry["result"] = message.content
+    return trace
+
+
 def trim_context(state: "AgentState") -> dict:
     """Drop the oldest think/act messages once there are more than
     MAX_CONTEXT_MESSAGES of them, keeping the loop's context bounded on long

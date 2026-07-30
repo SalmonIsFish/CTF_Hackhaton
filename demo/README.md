@@ -33,6 +33,13 @@ python -m demo.run_demo path/to/other_challenge.txt
   actual screen recording before the event, swap it in and reference that instead; this file
   is the placeholder until that happens.
 
+## For the dashboard, not the CLI
+
+This CLI is for solo rehearsal/regression-checking. Hasif's dashboard talks to the agent over
+HTTP instead — see `agent/api.py` (`uvicorn agent.api:app --reload --port 8000`), which wraps
+the same `agent/graph.py` loop as a `POST /solve` (full result) and `POST /solve/stream` (SSE,
+one event per graph step) endpoint.
+
 ## Still needed before the actual event
 
 This script proves the agent *can* solve a demo challenge reliably — it doesn't replace an

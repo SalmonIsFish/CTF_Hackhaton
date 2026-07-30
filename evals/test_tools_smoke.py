@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 
-from agent.graph import MAX_CONTEXT_MESSAGES, trim_context
+from agent.graph import MAX_CONTEXT_MESSAGES, extract_tool_trace, trim_context
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.search_skills import search_skills
@@ -65,4 +65,27 @@ assert all(isinstance(m, RemoveMessage) for m in big_result["messages"]), "expec
 assert "human-1" not in removed_ids, "the first HumanMessage (the challenge prompt) must never be trimmed"
 assert removed_ids == {f"msg-{i}" for i in range(overflow)}, (
     f"expected exactly the oldest {overflow} trimmable messages removed, got {removed_ids}"
+)
+
+print("\n=== extract_tool_trace: pairs an AIMessage's tool call with its ToolMessage result ===")
+trace_messages = [
+    HumanMessage(content="decode this", id="h-1"),
+    AIMessage(
+        content="",
+        id="ai-1",
+        tool_calls=[{"name": "identify_and_decode", "args": {"text": "abc"}, "id": "call-1"}],
+    ),
+    ToolMessage(content="base64: xyz", name="identify_and_decode", tool_call_id="call-1", id="tm-1"),
+]
+trace = extract_tool_trace(trace_messages)
+print(trace)
+assert trace == [{"name": "identify_and_decode", "args": {"text": "abc"}, "result": "base64: xyz"}], (
+    f"expected a single paired trace entry, got {trace}"
+)
+
+print("\n=== extract_tool_trace: a call with no ToolMessage yet has result=None ===")
+pending_trace = extract_tool_trace(trace_messages[:2])
+print(pending_trace)
+assert pending_trace == [{"name": "identify_and_decode", "args": {"text": "abc"}, "result": None}], (
+    f"expected result=None while the ToolMessage hasn't arrived yet, got {pending_trace}"
 )
