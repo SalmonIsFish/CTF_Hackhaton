@@ -2,3 +2,7 @@
 __pycache__/
 .claude/settings.local.json
 evals/run_log.jsonl
+
+# Downloaded third-party CTF challenge source (HTB/THM challenge files) -- personal practice
+# material, not part of this project, and not ours to redistribute.
+HTB Challnges/

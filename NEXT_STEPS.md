@@ -100,12 +100,29 @@ in `evals/practice_runs.md`.
   `port_scan`'s timeouts (now the shipped default) — a real, honest limitation: banner
   capture is best-effort against a real host, unlike the instant response a local test
   server gives. Full write-up in `evals/practice_runs.md`.
-- [ ] Pull 3–5 real *network-based CTF challenges* (picoCTF-style `nc`/web-IP challenges are
-  the working assumption) and run each through the full agent loop. **Still open** —
-  `scanme.nmap.org` above closed the "does this work against a real non-localhost host" risk;
-  this is specifically "does it work against an actual scored/CTF-shaped service," which needs
-  a human to hand over a real target — picoCTF instances are per-account/per-session, and no
-  organizer challenge IP exists yet.
+- [x] Pull real *network-based CTF challenges* and run each through the full agent loop.
+  **Done, via TryHackMe + HackTheBox free tiers** (no organizer/picoCTF target exists yet, so
+  these stood in — same "actual scored/CTF-shaped service" risk this item was tracking).
+  Full write-up in `evals/practice_runs.md`. Two real external targets, no flag on either,
+  but both genuinely informative:
+  - **TryHackMe Room 404** — reached via OpenVPN (had to switch from UDP, which stalled on a
+    TLS handshake timeout, to TCP 443 — worth remembering if this happens again on any
+    OpenVPN-based platform). Agent explored sensibly but the free-tier lab machine's 1-hour
+    hard limit killed it mid-run before it found the hidden endpoint. Surfaced a real gap:
+    no directory/wordlist enumeration tool — `fetch_url` only tries paths the model itself
+    thinks to guess.
+  - **HackTheBox "Space Explorer"** — reached directly over the public internet (HTB exposes
+    standalone challenge spawns on a public IP, no VPN hop needed for this one). Two runs:
+    blind (no flag, found the right endpoint/action names unprompted by reading page JS) and
+    with the challenge's own source code pasted into the prompt (got much closer — correctly
+    identified "conflicting JSON keys" as the right attack category — but missed the specific
+    Go-case-insensitive-vs-Python-case-sensitive key-matching trick that actually works).
+    Manually confirmed the real exploit (`HTB{C0SM1C-BYP4SS}`) to validate the root cause.
+    This is a reasoning-depth limit, not a tooling gap — `fetch_url` could already express the
+    winning request.
+  - Also the first real exercise of `require_approval`/`interrupt()` (Phase 0) against
+    genuinely external targets, not just local demos — every live-target call on both
+    platforms was gated and approved before firing.
 
 Owner: you, ideally with Rashid once he's back (see Phase 3).
 
