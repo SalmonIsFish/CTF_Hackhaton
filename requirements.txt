@@ -9,3 +9,4 @@ pydantic
 fastapi
 uvicorn
 requests
+tavily-python

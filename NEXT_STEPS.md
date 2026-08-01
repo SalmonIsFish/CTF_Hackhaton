@@ -234,6 +234,24 @@ a while, so there's nothing left blocking him.
 - [ ] An actual rehearsed screen recording of the demo — ideally showing a real network
   solve once Phase 1 lands, not just the synthetic local-server one.
   `demo/expected_transcript.txt` is a text placeholder, not a substitute.
+- [x] ~~`web_search` tool (Tavily-backed)~~ — done. `agent/tools/web_search.py`, wired into
+  `TOOLS` and the `search_vault → search_skills → web_search` grounding order in
+  `build_system_prompt()`. Motivated by real friction solving Desires: the agent had no way to
+  look up a specific technique/writeup itself, a human had to do it manually. Deliberately
+  excluded from `_NETWORK_TOOL_HOST_ARG` (and so from the host-allowlist/HITL gate) since it
+  queries the public internet, not the challenge's own target. Degrades gracefully to an
+  "unavailable" message if `TAVILY_API_KEY` is unset — no existing eval/demo depends on it.
+  Along the way, found and fixed a real Windows-only crash: `message.pretty_print()` (used by
+  `run_interactive()` and this module's own `__main__` suite) raised `UnicodeEncodeError` and
+  killed the whole process the moment a non-cp1252 character (e.g. `→`, now common across the
+  vault's technique notes) appeared anywhere in the conversation — including from an
+  uncontrolled source like a live target's own response. Fixed with a one-time
+  `sys.stdout.reconfigure(encoding="utf-8")` at the top of `agent/graph.py`. Also updated case 5
+  of the 5-case eval suite (`agent/graph.py`'s `__main__` block): it hardcoded `search_skills`
+  as required, which broke the moment the vault's own new RSA content (from the CTF Brain work)
+  legitimately answered the question via `search_vault` alone — the assertion now accepts
+  either lookup tool, matching the documented "vault before skills" priority instead of forcing
+  a specific one.
 
 ## Explicitly out of scope for this event (updated)
 

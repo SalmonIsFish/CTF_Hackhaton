@@ -19,6 +19,7 @@ from agent.tools.port_scan import port_scan
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
 from agent.tools.tcp_session import tcp_close, tcp_open, tcp_send
+from agent.tools.web_search import web_search
 
 print("=== find_flag_pattern: string containing a flag ===")
 print(find_flag_pattern.invoke({"text": "the answer is flag{abc123}, don't lose it"}))
@@ -53,6 +54,27 @@ print("\n=== search_skills: term not present anywhere in installed skills ===")
 skills_not_found = search_skills.invoke({"query": "zzz_definitely_not_in_skills_zzz"})
 print(skills_not_found)
 assert "No matches" in skills_not_found, "expected clean no-match message"
+
+print("\n=== web_search: empty query ===")
+empty_search = web_search.invoke({"query": "  "})
+print(empty_search)
+assert empty_search == "Empty query.", f"expected clean empty-query message, got {empty_search}"
+
+print("\n=== web_search: no TAVILY_API_KEY set, expect graceful degradation not a crash ===")
+import os as _os  # local import, avoids polluting the module-level namespace above
+
+_saved_key = _os.environ.pop("TAVILY_API_KEY", None)
+try:
+    no_key_result = web_search.invoke({"query": "zip slip symlink bypass"})
+    print(no_key_result)
+    assert "TAVILY_API_KEY not set" in no_key_result, (
+        f"expected the graceful unavailable message, got {no_key_result}"
+    )
+finally:
+    if _saved_key is not None:
+        _os.environ["TAVILY_API_KEY"] = _saved_key
+# A real live-API call is deliberately not part of this automated suite (same reasoning as
+# evals/real_target_check.py) -- verify manually with a real TAVILY_API_KEY set if needed.
 
 print("\n=== trim_context: under threshold, expect no-op ===")
 small_state = {
