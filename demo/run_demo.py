@@ -13,7 +13,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agent.graph import MAX_STEPS, build_graph, message_text
+from agent.graph import build_graph, message_text, run_config
 
 DEFAULT_CHALLENGE = Path(__file__).resolve().parent / "response_headers.txt"
 
@@ -51,7 +51,7 @@ def main() -> None:
             "flag": None,
             "category": None,
         },
-        config={"recursion_limit": MAX_STEPS * 4 + 2},
+        config=run_config(),
     )
 
     print("--- Tool calls made ---")

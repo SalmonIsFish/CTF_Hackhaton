@@ -1,5 +1,8 @@
 import json
 import re
+import time
+import uuid
+from pathlib import Path
 from typing import Annotated, Optional, Sequence, TypedDict
 from urllib.parse import urlparse
 
@@ -12,8 +15,10 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.types import Command, interrupt
 
 from agent.model_router import get_model
 from agent.tools.fetch_url import fetch_url
@@ -67,6 +72,37 @@ def extract_tool_trace(messages: Sequence[BaseMessage]) -> list[dict]:
             if entry is not None:
                 entry["result"] = message.content
     return trace
+
+
+# Full Telemetry (harness element #5/#9): a durable local run log, independent of any
+# LangSmith account or network access -- see .env.example for the optional LangSmith side
+# of telemetry, which this complements rather than replaces.
+RUN_LOG_PATH = Path(__file__).resolve().parent.parent / "evals" / "run_log.jsonl"
+
+
+def log_run(result: dict) -> None:
+    """Append one JSON line recording a completed run (prompt, category, steps, flag, full
+    tool trace) to RUN_LOG_PATH. Skips runs still paused on a HITL interrupt -- those aren't
+    finished yet, and get logged once whatever resumes them actually completes. Never raises:
+    a logging failure (disk full, read-only container filesystem, etc.) must not break a
+    solve -- see the Docker isolation notes in NEXT_STEPS.md for why this matters there."""
+    if "__interrupt__" in result:
+        return
+    human_messages = [m for m in result["messages"] if isinstance(m, HumanMessage)]
+    record = {
+        "timestamp": time.time(),
+        "prompt": str(human_messages[0].content) if human_messages else None,
+        "category": result.get("category"),
+        "steps": result.get("steps"),
+        "flag": result.get("flag"),
+        "tool_calls": extract_tool_trace(result["messages"]),
+    }
+    try:
+        RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with RUN_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
 
 
 # Live-target safety guard: the network tools (fetch_url, tcp_open) are the only ones that
@@ -243,6 +279,11 @@ class AgentState(TypedDict):
     steps: int
     flag: Optional[str]
     category: Optional[str]
+    # Enforce Permissions (harness element #5): when set, act() pauses via interrupt()
+    # before any live-target tool call (fetch_url/tcp_open/port_scan) and waits for an
+    # operator decision instead of invoking it outright. Defaults to falsy (via .get) for
+    # every existing caller that doesn't set it, so automated evals/demos are unaffected.
+    require_approval: Optional[bool]
 
 
 def build_graph(provider: str = "google"):
@@ -282,6 +323,27 @@ def build_graph(provider: str = "google"):
                     "the original challenge prompt. Only hosts named in the challenge may be "
                     "contacted."
                 )
+            elif target_host is not None and state.get("require_approval"):
+                # interrupt() pauses the graph here and re-raises with the same payload on
+                # every resumed replay until a matching value is supplied via
+                # Command(resume=...) — see run_interactive() for the CLI side of this and
+                # agent/api.py's /solve + /solve/resume for the HTTP side.
+                # Caveat: if a single AIMessage makes >1 gated tool call, resuming the second
+                # interrupt re-runs this node from the top, so an already-approved *earlier*
+                # call in the same batch would fire again (its real side effect isn't cached
+                # across the replay). In practice the model here makes one tool call per turn
+                # (verified across all eval cases), so this is a known, accepted edge case
+                # rather than something worth engineering around this week.
+                decision = interrupt(
+                    {"tool": call["name"], "args": call["args"], "target": target_host}
+                )
+                if decision == "approve":
+                    result = TOOLS_BY_NAME[call["name"]].invoke(call["args"])
+                else:
+                    result = (
+                        f"Denied by operator: {call['name']} targeting '{target_host}' was not "
+                        "approved."
+                    )
             else:
                 result = TOOLS_BY_NAME[call["name"]].invoke(call["args"])
             tool_messages.append(
@@ -328,7 +390,29 @@ def build_graph(provider: str = "google"):
     graph.add_conditional_edges("observe", route_after_observe, {"trim_context": "trim_context", END: END})
     graph.add_edge("trim_context", "think")
 
-    return graph.compile()
+    # Checkpointer is always attached (cheap, in-memory) so any run can use require_approval;
+    # LangGraph requires a thread_id in config whenever a checkpointer is present, even for
+    # runs that never actually interrupt — see run_config() below.
+    return graph.compile(checkpointer=MemorySaver())
+
+
+def run_config(thread_id: Optional[str] = None, *, provider: Optional[str] = None) -> dict:
+    """Build the config dict every graph.invoke/stream call needs now that a checkpointer is
+    always attached: a thread_id (generated if not given) plus enough recursion headroom for
+    MAX_STEPS loop iterations (triage, then think -> act -> observe -> trim_context per step).
+
+    Also carries LangSmith tags/metadata (Full Telemetry, harness element #5/#9) -- inert
+    unless LANGCHAIN_TRACING_V2 is set, see .env.example. category isn't known until the
+    triage node runs, so "untriaged" is the best-effort top-level tag; the graph's own
+    per-node tracing still gives full triage/think/act/observe granularity regardless."""
+    config = {
+        "configurable": {"thread_id": thread_id or uuid.uuid4().hex},
+        "recursion_limit": MAX_STEPS * 4 + 2,
+        "tags": ["ctf-agent", "untriaged"],
+    }
+    if provider:
+        config["metadata"] = {"provider": provider}
+    return config
 
 
 def run_case(app, prompt: str) -> AgentState:
@@ -338,16 +422,48 @@ def run_case(app, prompt: str) -> AgentState:
         "flag": None,
         "category": None,
     }
-    # One triage step, then each loop iteration visits think -> act -> observe ->
-    # trim_context (4 graph steps), so give recursion_limit enough headroom for
-    # MAX_STEPS iterations.
-    final_state = app.invoke(initial_state, config={"recursion_limit": MAX_STEPS * 4 + 2})
+    final_state = app.invoke(initial_state, config=run_config())
+    log_run(final_state)
     for message in final_state["messages"]:
         message.pretty_print()
     print("category:", final_state["category"])
     print("steps:", final_state["steps"])
     print("flag:", final_state["flag"])
     return final_state
+
+
+def run_interactive(app, prompt: str) -> AgentState:
+    """Like run_case, but with require_approval=True: pauses at every live-target tool call
+    (fetch_url/tcp_open/port_scan) and asks a real human at the terminal to approve or deny it
+    before continuing. This is the CLI-side half of the Enforce Permissions harness element —
+    agent/api.py's /solve + /solve/resume is the HTTP-side equivalent for a dashboard."""
+    initial_state: AgentState = {
+        "messages": [HumanMessage(content=prompt)],
+        "steps": 0,
+        "flag": None,
+        "category": None,
+        "require_approval": True,
+    }
+    config = run_config()
+    state = app.invoke(initial_state, config=config)
+
+    while "__interrupt__" in state:
+        payload = state["__interrupt__"][0].value
+        print(
+            f"\n--- Approval requested: {payload['tool']}({payload['args']}) "
+            f"-> target {payload['target']} ---"
+        )
+        answer = input("Approve? [y/N] ").strip().lower()
+        decision = "approve" if answer == "y" else "deny"
+        state = app.invoke(Command(resume=decision), config=config)
+
+    log_run(state)
+    for message in state["messages"]:
+        message.pretty_print()
+    print("category:", state["category"])
+    print("steps:", state["steps"])
+    print("flag:", state["flag"])
+    return state
 
 
 if __name__ == "__main__":

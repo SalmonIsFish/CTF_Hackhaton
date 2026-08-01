@@ -3,6 +3,7 @@ langchain
 langchain-google-genai
 langchain-anthropic
 langchain-groq
+langsmith
 python-dotenv
 pydantic
 fastapi

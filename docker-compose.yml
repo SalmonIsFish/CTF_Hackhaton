@@ -1,0 +1,24 @@
+# Isolate Execution (organizer's Next Steps slide, harness element #5) -- see the Dockerfile
+# header comment for what this does and doesn't provide (process/filesystem isolation and
+# resource caps; NOT per-challenge dynamic network egress control, which stays enforced in
+# Python via extract_allowed_hosts()/act() in agent/graph.py).
+services:
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    mem_limit: 512m
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Default bridge network, not host networking -- the container only reaches the
+    # outside world through its own NAT'd interface, same as any other container.
+    networks:
+      - agent-net
+
+networks:
+  agent-net:
+    driver: bridge

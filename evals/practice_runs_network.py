@@ -17,7 +17,7 @@ import sys
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agent.graph import MAX_STEPS, build_graph, message_text
+from agent.graph import build_graph, message_text, run_config
 from evals.practice_targets import (
     BANNER_TEXT,
     LOGIN_FLAG,
@@ -38,7 +38,7 @@ def run_case(name: str, prompt: str) -> dict:
     print(f"prompt: {prompt}\n")
     result = app.invoke(
         {"messages": [HumanMessage(content=prompt)], "steps": 0, "flag": None, "category": None},
-        config={"recursion_limit": MAX_STEPS * 4 + 2},
+        config=run_config(),
     )
     tool_calls_made = [
         call["name"]

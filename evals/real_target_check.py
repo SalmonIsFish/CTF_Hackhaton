@@ -14,7 +14,7 @@ import sys
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agent.graph import MAX_STEPS, build_graph, message_text
+from agent.graph import build_graph, message_text, run_config
 
 TARGET_HOST = "scanme.nmap.org"
 CANDIDATE_PORTS = "22,80,9929"  # 22 and 80 are documented open; 9929 (ncat) is a known extra
@@ -32,7 +32,7 @@ def main() -> None:
     app = build_graph()
     result = app.invoke(
         {"messages": [HumanMessage(content=prompt)], "steps": 0, "flag": None, "category": None},
-        config={"recursion_limit": MAX_STEPS * 4 + 2},
+        config=run_config(),
     )
 
     tool_calls_made = [
