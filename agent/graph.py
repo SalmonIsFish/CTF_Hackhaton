@@ -28,6 +28,7 @@ from agent.tools.port_scan import port_scan
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
 from agent.tools.tcp_session import close_all_sessions, tcp_close, tcp_open, tcp_send
+from agent.tools.upload_file import upload_file
 
 MAX_STEPS = 15
 FLAG_PATTERN = re.compile(r"\w+\{[^{}]+\}")
@@ -116,7 +117,9 @@ _NC_HOST_RE = re.compile(r"\bnc\s+([A-Za-z0-9.-]+)\s+\d{1,5}\b", re.IGNORECASE)
 _HOST_PORT_RE = re.compile(r"\b([A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?):(\d{1,5})\b")
 
 # args key holding the target host for each network tool, so act() can look it up generically.
-_NETWORK_TOOL_HOST_ARG = {"fetch_url": "url", "tcp_open": "host", "port_scan": "host"}
+_NETWORK_TOOL_HOST_ARG = {
+    "fetch_url": "url", "tcp_open": "host", "port_scan": "host", "upload_file": "url",
+}
 
 
 def extract_allowed_hosts(prompt: str) -> set[str]:
@@ -139,7 +142,7 @@ def _extract_target_host(tool_name: str, args: dict) -> Optional[str]:
     value = args.get(arg_name)
     if not value:
         return None
-    if tool_name == "fetch_url":
+    if tool_name in ("fetch_url", "upload_file"):
         return (urlparse(value).hostname or value).lower()
     return str(value).lower()
 
@@ -266,6 +269,7 @@ TOOLS = [
     search_vault,
     search_skills,
     fetch_url,
+    upload_file,
     tcp_open,
     tcp_send,
     tcp_close,
@@ -303,8 +307,28 @@ def build_graph(provider: str = "google"):
         messages = state["messages"]
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [build_system_prompt(state.get("category") or "general")] + list(messages)
-        response = model.invoke(messages)
+        try:
+            response = model.invoke(messages)
+        except Exception as exc:
+            # A model-layer failure (e.g. every rotation key hit its quota) used to crash the
+            # whole graph.invoke() call with a raw traceback -- confirmed against a real 429
+            # during live testing, not a hypothetical. Ending the run cleanly here (no
+            # tool_calls -> route_after_think takes the existing END path) preserves whatever
+            # partial state/messages already exist instead of losing the run outright.
+            response = AIMessage(content=f"Model call failed, ending run: {exc}")
         return {"messages": [response], "steps": state["steps"] + 1}
+
+    def invoke_tool(name: str, args: dict):
+        """TOOLS_BY_NAME[name].invoke(args), but never lets a malformed tool call (e.g. a
+        model-hallucinated nested dict for a typed param) crash the whole graph run with an
+        uncaught pydantic ValidationError -- that happens at LangChain's arg-validation layer,
+        before the tool body itself runs, so it's outside each tool's own "never raises"
+        handling. Surfacing it as a ToolMessage instead of a crash lets the model see its
+        mistake and retry with corrected args on the next turn, same as any other tool result."""
+        try:
+            return TOOLS_BY_NAME[name].invoke(args)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+            return f"Tool call failed: {name}({args}) raised {type(exc).__name__}: {exc}"
 
     def act(state: AgentState) -> dict:
         last_message = state["messages"][-1]
@@ -338,14 +362,14 @@ def build_graph(provider: str = "google"):
                     {"tool": call["name"], "args": call["args"], "target": target_host}
                 )
                 if decision == "approve":
-                    result = TOOLS_BY_NAME[call["name"]].invoke(call["args"])
+                    result = invoke_tool(call["name"], call["args"])
                 else:
                     result = (
                         f"Denied by operator: {call['name']} targeting '{target_host}' was not "
                         "approved."
                     )
             else:
-                result = TOOLS_BY_NAME[call["name"]].invoke(call["args"])
+                result = invoke_tool(call["name"], call["args"])
             tool_messages.append(
                 ToolMessage(content=str(result), name=call["name"], tool_call_id=call["id"])
             )

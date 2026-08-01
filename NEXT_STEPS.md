@@ -123,6 +123,35 @@ in `evals/practice_runs.md`.
   - Also the first real exercise of `require_approval`/`interrupt()` (Phase 0) against
     genuinely external targets, not just local demos — every live-target call on both
     platforms was gated and approved before firing.
+  - **HackTheBox "SecNotes" (Web, Easy)** — a follow-up solo session, run to actually land a
+    flag rather than another near-miss. Still no flag, but found and fixed two real,
+    generically-useful agent bugs along the way: `fetch_url` had no way to set request
+    headers (couldn't send `Content-Type: application/json`, so it silently couldn't POST to
+    any `express.json()`-style backend — a very common stack, not SecNotes-specific), and
+    `act()` had no error handling around tool invocation, so a single malformed tool call
+    (model-hallucinated nested dict for the new `headers` param) crashed the entire graph run
+    instead of surfacing as a recoverable `ToolMessage`. Both fixed and verified; full
+    write-up in `evals/practice_runs.md`. The actual `/flag` access-control bypass on
+    SecNotes itself is still unsolved — real recon (confirmed `/flag` is a genuinely gated
+    route via its distinct 403, ruled out IP-spoofing headers/cookies/session/ObjectId
+    prediction) came up empty. Left as a real open item, not chased further to avoid
+    over-hammering a live scored target.
+
+  - **HackTheBox "Desires" — flag captured**: `HTB{S0m3tIm3s_Its_J4usT_A_B!G_M3ss}`. First
+    fully solved live external target. A layered auth bypass (untrusted `username` cookie +
+    predictable `sha256(timestamp)` session IDs + a Zip Slip symlink bypass on the archive
+    upload) — confirmed the first two independently via source review, needed a public
+    writeup (MachineEP, Medium) for the specific symlink technique after ~45 min of
+    unsuccessful independent path-traversal testing. Also surfaced two more real agent bugs
+    (a model-layer crash on Gemini's real 15-req/min free-tier limit, and the multi-key
+    rotation feature never actually catching a real quota error) — both fixed, see
+    `evals/practice_runs.md` for the full write-up and `agent/tools/upload_file.py` (new
+    tool, multipart upload support fetch_url never had).
+  - **TryHackMe "SecNotes" — reasoned to be unsolvable via HTTP alone**: full source review
+    found the `/flag` route's loopback-only check has no reachable SSRF surface anywhere in
+    the app's code (confirmed a real NoSQL injection bug in `/update`, but it only touches
+    MongoDB documents — nothing in the app ever turns a DB result into an outbound request).
+    Not a dead end from lack of effort — a genuinely airtight design, unlike Desires.
 
 Owner: you, ideally with Rashid once he's back (see Phase 3).
 

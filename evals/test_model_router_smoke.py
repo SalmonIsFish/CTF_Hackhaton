@@ -7,13 +7,21 @@ non-quota error propagate instead of rotating), not whether any real provider is
 """
 from google.genai.errors import APIError
 
-from agent.model_router import _load_keys, _RotatingChatModel
+from agent.model_router import _is_quota_error, _load_keys, _RotatingChatModel
+
+
+class _WrappedQuotaError(Exception):
+    """Stands in for langchain-google-genai's real ChatGoogleGenerativeAIError, which wraps
+    the underlying google.genai.errors.APIError via `raise ... from e` rather than letting it
+    propagate directly -- confirmed against a real 429 during live testing. A rotation check
+    that does `except APIError` (the original, buggy implementation) never sees this shape."""
 
 
 class _StubModel:
-    def __init__(self, fail_with_quota_error: bool = False, fail_with_other_error: bool = False):
+    def __init__(self, fail_with_quota_error: bool = False, fail_with_other_error: bool = False, fail_wrapped: bool = False):
         self.fail_with_quota_error = fail_with_quota_error
         self.fail_with_other_error = fail_with_other_error
+        self.fail_wrapped = fail_wrapped
         self.calls = 0
 
     def invoke(self, messages):
@@ -23,6 +31,14 @@ class _StubModel:
                 code=429,
                 response_json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota exceeded"}},
             )
+        if self.fail_wrapped:
+            try:
+                raise APIError(
+                    code=429,
+                    response_json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota exceeded"}},
+                )
+            except APIError as inner:
+                raise _WrappedQuotaError("Error calling model") from inner
         if self.fail_with_other_error:
             raise APIError(code=400, response_json={"error": {"status": "INVALID_ARGUMENT", "message": "bad request"}})
         return f"ok from stub (calls={self.calls})"
@@ -81,6 +97,25 @@ try:
 except APIError as exc:
     assert exc.code == 400, f"expected the original 400 to propagate unchanged, got {exc.code}"
     assert never_reached.calls == 0, "expected rotation to NOT trigger on a non-quota error"
+
+print("\n=== _is_quota_error: detects a 429 wrapped in another exception's __cause__ chain ===")
+try:
+    _WrappedQuotaError("outer").__class__
+    raise APIError(code=429, response_json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "x"}})
+except APIError as inner:
+    wrapped = _WrappedQuotaError("outer")
+    wrapped.__cause__ = inner
+    assert _is_quota_error(wrapped), "expected a wrapped 429 to be detected via __cause__"
+assert not _is_quota_error(ValueError("unrelated")), "expected a plain unrelated error to not match"
+
+print("\n=== _RotatingChatModel: rotates on a REAL-SHAPED wrapped 429 (regression for the bug where")
+print("    `except APIError` never matched langchain's wrapped exception in production) ===")
+bad_wrapped = _StubModel(fail_wrapped=True)
+good_after_wrap = _StubModel()
+rotating_wrapped = _RotatingChatModel([bad_wrapped, good_after_wrap])
+result_wrapped = rotating_wrapped.invoke("hi")
+assert result_wrapped == "ok from stub (calls=1)", result_wrapped
+assert rotating_wrapped._index == 1
 
 print("\n=== _RotatingChatModel: bind_tools() rebinds every underlying model, still rotates ===")
 bad_bind = _StubModel(fail_with_quota_error=True)

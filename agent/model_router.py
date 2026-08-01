@@ -21,6 +21,21 @@ def _load_keys(single_env_var: str) -> List[str]:
     return [single_value] if single_value else []
 
 
+def _is_quota_error(exc: BaseException) -> bool:
+    """True if exc, or anything in its __cause__ chain, is a 429/RESOURCE_EXHAUSTED APIError.
+    langchain-google-genai's ChatGoogleGenerativeAI wraps the real google.genai.errors.APIError
+    in its own ChatGoogleGenerativeAIError (`raise ... from e`) before it ever reaches a caller
+    — confirmed against a real quota-exhaustion run, not just the mocked unit test — so checking
+    isinstance(exc, APIError) directly (the original implementation) never matched a real quota
+    error, only a directly-raised one. Walking __cause__ catches both shapes."""
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, APIError) and (seen.code == 429 or seen.status == "RESOURCE_EXHAUSTED"):
+            return True
+        seen = seen.__cause__
+    return False
+
+
 class _RotatingChatModel:
     """Wraps one or more same-provider model instances (one per API key) and falls back to
     the next key when the current one hits a quota/rate-limit error, instead of failing the
@@ -43,8 +58,8 @@ class _RotatingChatModel:
             model = self._models[self._index]
             try:
                 return model.invoke(messages, *args, **kwargs)
-            except APIError as exc:
-                if exc.code == 429 or exc.status == "RESOURCE_EXHAUSTED":
+            except Exception as exc:
+                if _is_quota_error(exc):
                     last_exc = exc
                     self._index = (self._index + 1) % len(self._models)
                     continue
