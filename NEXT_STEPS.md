@@ -155,18 +155,45 @@ in `evals/practice_runs.md`.
 
 Owner: you, ideally with Rashid once he's back (see Phase 3).
 
-## Phase 2 — Close the organizer-question loop (must)
+## Phase 2 — Organizer questions: closed via working assumptions, not answers (must)
+
+The organizer has stopped responding entirely — no replies to messages, and the team WhatsApp
+group is admin-only for posting, so there's no channel left to ask through. Waiting further
+isn't a plan. Closing this phase with clearly-labeled working assumptions instead, reasoned
+from what's already been demonstrated or built, revisable the moment real information shows up
+(a past-hackathon writeup, a last-minute organizer reply, or reality on the day itself).
 
 - [x] Network/internet access during competition — confirmed by the organizer's own demo
   (a challenge handed out as a bare IP).
-- [ ] Presentation vs. flag-only scoring.
-- [ ] Confirmed categories.
-- [ ] Autonomy requirements — the demo answers "is it network-based," not "how autonomous
-  does the agent need to be" (fully autonomous solve vs. operator-assisted).
-- [ ] Environment/VM provisioning — fixed IP range, VPN, or literally "here's an IP" per
-  challenge?
-- [ ] Team-role rules.
-- [ ] Submission format.
+- [x] **Autonomy requirements — resolved by inference, not actually unknown.** The organizer's
+  own "Next Steps: Implementation" slide required Enforce Permissions (HITL) on top of the
+  framework choice already made — that's a strong, direct signal this is meant to be
+  operator-assisted, not a fully hands-off autonomous solve. Already built for
+  (`require_approval`/`interrupt()` in `agent/graph.py`, Phase 0 above) — no further action
+  needed.
+- [x] **Environment/VM provisioning — resolved by inference.** The organizer's demo showed a
+  bare-IP challenge; this project has since validated both VPN-reached (TryHackMe) and
+  direct-public-IP (HackTheBox) live targets work end-to-end with the existing tools
+  (`fetch_url`/`tcp_session`/`port_scan` + `extract_allowed_hosts()`). Working assumption:
+  expect `host:port`, sometimes behind a VPN — both are covered.
+- [x] **Confirmed categories — treated as low-risk regardless of the answer.** 14 skill packs
+  already span Web/Crypto/Pwn/Reverse/Forensics/Malware/OSINT/Misc/AI-ML — broad enough that
+  not knowing the exact 2–3 categories in advance isn't a real blocker. Rashid's Phase 3 task
+  to narrow this down is nice-to-have, not required.
+- [ ] **Presentation vs. flag-only scoring — working assumption: both.** The brief's heavy
+  emphasis on the "9 Harness Elements" (safety, observability, sub-agents, etc.), not just flag
+  count, suggests the architecture/demo itself is judged alongside raw flags. Acting on this:
+  keep `demo/` rehearsal-ready (Phase 4's "actual rehearsed screen recording" item), don't
+  optimize purely for flag count at the expense of a coherent demo story.
+- [ ] **Team-role rules / submission format — accepted as genuinely unknowable, and genuinely
+  low-risk.** Nothing in the current build depends on a specific submission mechanism — the
+  dashboard surfaces the flag string directly (`final_state["flag"]`) for a human to submit
+  however the organizer's platform requires. No code depends on this being answered in advance.
+
+**Still open, real task**: if the user finds any writeups/details from a past edition of this
+hackathon (or the same organizer's prior events), fold that into vault content (the "CTF Brain"
+work, Phase 3's Farhan item below) and revisit the two `[ ]` items above if it contradicts
+these assumptions.
 
 ## Phase 3 — Teammate sync (must)
 
