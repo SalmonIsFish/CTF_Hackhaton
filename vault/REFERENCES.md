@@ -70,6 +70,14 @@ subcategory, e.g. `auth-bypass/`, `injection/`, if this grows):
 - `zip-slip-symlink-bypass.md` — archive extraction symlink traversal (HackTheBox "Desires")
 - `secnotes-analysis-dead-end.md` — confirmed dead-end analysis (TryHackMe "SecNotes")
 
+**From a real external target still in progress** (HackTheBox "Offlinea" — see
+`evals/practice_runs.md` for the full session):
+- `pdf-generator-ssrf-selenium.md` — Selenium/headless-Chrome PDF SSRF, plus a reusable
+  PDF-content-stream decoder (no PDF library needed), plus a "back off from a degrading live
+  target" lesson
+- `jwt-secret-and-dns-ssrf-hints.md` — reading a `requirements.txt` as a vulnerability roadmap;
+  the concrete JWT/DNS-SSRF game plan for the next attempt on this specific challenge
+
 **From external reference reading** (0xdf, ctf-wiki, writeup blogs):
 - `server-side-template-injection-ssti.md` — Jinja2/XSLT injection to RCE
 - `idor-insecure-direct-object-reference.md` — ID-based access control bypass

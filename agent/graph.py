@@ -34,7 +34,7 @@ from langgraph.types import Command, interrupt
 
 from agent.model_router import get_model
 from agent.tools.fetch_url import fetch_url
-from agent.tools.find_flag_pattern import find_flag_pattern
+from agent.tools.find_flag_pattern import FLAG_PATTERN, find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.port_scan import port_scan
 from agent.tools.search_skills import search_skills
@@ -44,7 +44,6 @@ from agent.tools.upload_file import upload_file
 from agent.tools.web_search import web_search
 
 MAX_STEPS = 15
-FLAG_PATTERN = re.compile(r"\w+\{[^{}]+\}")
 
 # State & Context Management: cap how many think/act messages accumulate in a
 # long run. The original SystemMessage and the first HumanMessage (the actual

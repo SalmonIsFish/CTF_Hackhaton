@@ -158,6 +158,63 @@ multi-step decode, vault lookup) against different providers/models, with the
 | `openai/gpt-oss-120b` | Groq | PASS | PASS | FAIL | PASS | — | Weak multi-step chaining: after decoding base64 to hex, calls `echo` redundantly instead of calling `identify_and_decode` again, then states the final flag as prose instead of via a tool call — so `observe()` never sees it in a `ToolMessage` and the flag is never captured. |
 | `llama-3.3-70b-versatile` | Groq | — | — | — | — | — | **Unusable.** Reliably emits malformed tool-call syntax (`<function=search_vault{"query": "..."}</function>` instead of a proper JSON tool call), which Groq rejects outright with `400 tool_use_failed`. Reproduced twice, not transient. |
 
+## Real HackTheBox target — "Offlinea" (Web), in progress, not yet solved
+
+Testing session for the newly-added `web_search` tool and the CTF Brain vault content, run
+against a fresh live target. Two full agent runs plus manual follow-up probing. Not solved this
+session, but real, generalizable findings came out of it — full technique write-ups now in
+`vault/techniques/web/pdf-generator-ssrf-selenium.md` and
+`vault/techniques/web/jwt-secret-and-dns-ssrf-hints.md`.
+
+**App shape**: a "bartender" themed page (`url`, `name`, `secret` text inputs) that submits to
+`GET /bartender.php?url=...&name=...&secret=...` and returns a PDF. Stack confirmed via a
+provided `requirements.txt`: `flask`, `selenium`, `pyjwt`, `requests`, `dnspython` — a real
+headless-Chrome-driven PDF generator (confirmed independently from the PDF's own metadata:
+`Producer: Skia/PDF m143`, a real `Chrome/143.0.0.0` user-agent), not a lightweight PDF library.
+
+**Two real agent-harness bugs found and fixed, both confirmed via this live run, not
+synthetically**:
+- `observe()`'s auto flag-detection regex (`agent/graph.py`) was `\w+\{[^{}]+\}` — far too
+  loose. The first agent run false-matched garbage bytes inside the PDF response's raw
+  (still-compressed) binary as a "flag" and ended the run at step 4 before real exploration
+  happened. Root cause: this regex had silently drifted from the stricter, separate one in
+  `agent/tools/find_flag_pattern.py` (`(?:flag|ctf)\{...\}`) — which itself had the opposite
+  bug: it would have **missed** both real `HTB{...}` flags captured earlier this session, since
+  it didn't recognize that prefix at all. Fixed both: tightened the auto-detector to
+  `\b(?:flag|ctf|htb)\{[^{}]{1,300}\}` and made `graph.py` import that single pattern instead of
+  keeping a second copy that can drift again.
+- Confirmed (not fixed, a genuine model-behavior gap rather than a code bug): given a `web_search`
+  tool, when a specific query search turns up no results, the model tends to retry with
+  reworded phrasings rather than quickly concluding "no writeup exists, pivot to direct
+  exploration." Burned 5 of a 15-step budget on `web_search` alone in the second run, all minor
+  rephrasings of "is there a public writeup for Offlinea."
+
+**Manual follow-up findings** (after the agent's own runs, pushing further by hand):
+- `url=file:///flag.txt` gets an **instant** rejection: the app's response, once properly
+  decoded (raw PDF text is FlateDecode-compressed + glyph-ID-encoded behind a custom font's
+  ToUnicode CMap — see the new PDF-decoding technique note), reads **"Dont try to trick me!"**.
+  This is the first confirmed case of actually reading real *rendered content* out of a PDF
+  response rather than just skimming raw/corrupted bytes.
+- Every plain `http://` URL tried (external, and several internal `127.0.0.1` ports) **hangs**
+  rather than fast-failing, up to a 40-second tested timeout. Initially read as "no outbound
+  network egress"; the later `dnspython` discovery reframes this as more likely "the SSRF
+  guard's own DNS-resolution check is the slow/hanging step" — a more specific, more actionable
+  hypothesis for next time (see the JWT/DNS hints note for the reasoning).
+- **The target visibly degraded under repeated testing** — by the end of the session, even the
+  plain homepage (instant all session) started timing out. Real headless-Chrome-per-request
+  backends are expensive; stopped testing rather than continue hammering a live, likely
+  resource-exhausted target. This is worth internalizing as a general rule, not just something
+  that happened once: recognize target degradation and back off, the same discipline the
+  harness's own loop-detection (`route_after_observe`) already enforces automatically inside
+  the agent loop, but which manual probing outside the graph doesn't get for free.
+
+**Not yet tried, the concrete plan for next attempt** (on a fresh instance, since this one may
+still be degraded): test whether the `name` field is reflected unescaped into the rendered
+page — if so, HTML injection there (e.g. `<iframe src="file:///flag.txt">`) could reach the same
+powerful Selenium-driven renderer while completely bypassing whatever validation is specifically
+written for the `url` parameter. Separately, investigate whether `secret` has any JWT-related
+effect given `pyjwt` is a real dependency, not incidental.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`
