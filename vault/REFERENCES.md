@@ -58,10 +58,18 @@ read for deeper context.
 - Internal best practice: when adding a new technique note to the vault, add a corresponding
   entry here if you're relying on an external writeup/reference.
 
-## Vault content added this session
+## Vault Content Organization
 
-All technique notes are filed under `vault/techniques/web/` (further categorization by
-subcategory, e.g. `auth-bypass/`, `injection/`, if this grows):
+**Comprehensive category guides** (masterclass-level techniques for 20+ year veterans):
+- `Web_Techniques.md` — HTTP analysis, exploitation chains, WAF bypass, reconnaissance
+- `Crypto_Techniques.md` — RSA/ECC attacks, PRNG weaknesses, number theory exploits, lattice attacks
+- `Forensics_Techniques.md` — Memory forensics, disk analysis, steganography, artifact recovery
+
+**Methodology & Testing Checklists**:
+- `web-testing-methodology.md` — Phase-based testing, 13 priority categories, time management
+- Crypto/forensics methodology embedded in technique files (not separate due to specificity)
+
+## Vault content reference
 
 **From real external targets solved**:
 - `json-parser-key-casing-differential.md` — Go vs Python JSON parsing (HackTheBox "Space Explorer")
