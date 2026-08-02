@@ -12,6 +12,7 @@ from agent.graph import (
     trim_context,
 )
 from agent.tools import tcp_session
+from agent.tools.dir_enum import dir_enum
 from agent.tools.fetch_url import fetch_url
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
@@ -312,3 +313,116 @@ port_rows = [
     if "\t" in line and not line.startswith("port\t")
 ]
 assert len(port_rows) == MAX_PORTS, f"expected exactly {MAX_PORTS} ports scanned, got {len(port_rows)}"
+
+
+print("\n=== dir_enum: normal sweep, known hits reported and 404s omitted ===")
+
+
+class _DirEnumHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/admin":
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        elif self.path == "/old-login":
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+dir_enum_httpd = socketserver.TCPServer(("127.0.0.1", 0), _DirEnumHTTPHandler)
+dir_enum_port = dir_enum_httpd.server_address[1]
+dir_enum_thread = threading.Thread(target=dir_enum_httpd.serve_forever, daemon=True)
+dir_enum_thread.start()
+try:
+    sweep_result = dir_enum.invoke({
+        "base_url": f"http://127.0.0.1:{dir_enum_port}",
+        "paths": "admin,old-login,definitely-not-real",
+    })
+    print(sweep_result)
+    assert "<untrusted_data" in sweep_result, "expected untrusted_data wrapper"
+    assert "admin\t200" in sweep_result, f"expected the 200 hit reported, got {sweep_result}"
+    assert "old-login\t302" in sweep_result and "/login" in sweep_result, (
+        f"expected the redirect and its Location reported, got {sweep_result}"
+    )
+    assert "definitely-not-real\t" not in sweep_result, (
+        f"expected the 404 path omitted from the report, got {sweep_result}"
+    )
+finally:
+    dir_enum_httpd.shutdown()
+    dir_enum_httpd.server_close()
+
+print("\n=== dir_enum: wildcard/catch-all target aborts instead of reporting false positives ===")
+
+
+class _WildcardHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"catch-all page")
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+wildcard_httpd = socketserver.TCPServer(("127.0.0.1", 0), _WildcardHTTPHandler)
+wildcard_port = wildcard_httpd.server_address[1]
+wildcard_thread = threading.Thread(target=wildcard_httpd.serve_forever, daemon=True)
+wildcard_thread.start()
+try:
+    wildcard_result = dir_enum.invoke({"base_url": f"http://127.0.0.1:{wildcard_port}"})
+    print(wildcard_result)
+    assert "aborted" in wildcard_result.lower(), f"expected an abort message, got {wildcard_result}"
+    assert "wildcard" in wildcard_result.lower() or "catch-all" in wildcard_result.lower(), (
+        f"expected the wildcard/catch-all finding named, got {wildcard_result}"
+    )
+    assert "path\tstatus" not in wildcard_result, (
+        f"expected no per-path row table on an aborted sweep, got {wildcard_result}"
+    )
+finally:
+    wildcard_httpd.shutdown()
+    wildcard_httpd.server_close()
+
+print("\n=== dir_enum: an oversized explicit paths list is capped, not run in full ===")
+from agent.tools.dir_enum import MAX_PATHS  # noqa: E402 - imported here to keep it near its one use
+
+
+class _DirEnumCapHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/cap-item-"):
+            self.send_response(200)
+        else:
+            self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+dir_enum_cap_httpd = socketserver.TCPServer(("127.0.0.1", 0), _DirEnumCapHTTPHandler)
+dir_enum_cap_port = dir_enum_cap_httpd.server_address[1]
+dir_enum_cap_thread = threading.Thread(target=dir_enum_cap_httpd.serve_forever, daemon=True)
+dir_enum_cap_thread.start()
+try:
+    oversized_paths = ",".join(f"cap-item-{i}" for i in range(MAX_PATHS + 25))
+    capped_sweep = dir_enum.invoke({
+        "base_url": f"http://127.0.0.1:{dir_enum_cap_port}",
+        "paths": oversized_paths,
+    })
+    cap_rows = [line for line in capped_sweep.split("\n") if line.startswith("cap-item-")]
+    assert len(cap_rows) == MAX_PATHS, f"expected exactly {MAX_PATHS} paths swept, got {len(cap_rows)}"
+finally:
+    dir_enum_cap_httpd.shutdown()
+    dir_enum_cap_httpd.server_close()
+
+print("\n=== dir_enum: unreachable target, expect a clean error string, not an exception ===")
+dir_enum_refused = dir_enum.invoke({"base_url": "http://127.0.0.1:1"})
+print(dir_enum_refused)
+assert "failed" in dir_enum_refused.lower(), f"expected a clean failure message, got: {dir_enum_refused}"

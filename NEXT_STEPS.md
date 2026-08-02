@@ -110,7 +110,16 @@ in `evals/practice_runs.md`.
     OpenVPN-based platform). Agent explored sensibly but the free-tier lab machine's 1-hour
     hard limit killed it mid-run before it found the hidden endpoint. Surfaced a real gap:
     no directory/wordlist enumeration tool — `fetch_url` only tries paths the model itself
-    thinks to guess.
+    thinks to guess. **Update: closed.** `agent/tools/dir_enum.py` (pure Python, `requests`,
+    ~34-entry built-in wordlist of CTF-relevant paths, capped at 40 paths/20s per call) sweeps
+    a base URL and reports non-404 hits, with a baseline canary probe that aborts the sweep
+    outright if the target is a wildcard/catch-all responder (e.g. an SPA history-fallback
+    route) rather than reporting a wordlist's worth of false positives. Wired into
+    `agent/graph.py`'s `TOOLS`/`_NETWORK_TOOL_HOST_ARG`/host-allowlist path the same way as the
+    other network tools, and smoke-tested in `evals/test_tools_smoke.py` (normal sweep,
+    wildcard-abort, cap enforcement, unreachable-target error handling — all passing). Not yet
+    re-validated against Room 404 or an equivalent real target; a natural next
+    `evals/practice_runs.md` entry, out of scope for this change.
   - **HackTheBox "Space Explorer"** — reached directly over the public internet (HTB exposes
     standalone challenge spawns on a public IP, no VPN hop needed for this one). Two runs:
     blind (no flag, found the right endpoint/action names unprompted by reading page JS) and
@@ -284,14 +293,18 @@ on the actual competition machine first.
 
 ## Architecture note worth remembering
 
-The agent is no longer a pure "semi-autonomous copilot" — it now has three tools that reach
+The agent is no longer a pure "semi-autonomous copilot" — it now has tools that reach
 out to a live target on their own: `fetch_url` (`agent/tools/fetch_url.py`),
 `tcp_open`/`tcp_send`/`tcp_close` (`agent/tools/tcp_session.py`, a multi-turn
 `nc`/pwntools-`remote()`-style session — connect once, send/receive repeatedly, close
-explicitly), and `port_scan` (`agent/tools/port_scan.py`, added after the organizer's demo
+explicitly), `port_scan` (`agent/tools/port_scan.py`, added after the organizer's demo
 showed bare-IP-no-port challenges are real — sweeps a capped candidate port list via
 `socket.connect_ex()` and passively reads any banner volunteered on connect, e.g. SSH's
-unprompted version string). All three are pure Python (`requests` / stdlib `socket`) — no
+unprompted version string), and `dir_enum` (`agent/tools/dir_enum.py`, added after the
+TryHackMe Room 404 run above showed `fetch_url` alone can't find a hidden endpoint it never
+thinks to guess — sweeps a capped, built-in wordlist of CTF-relevant paths against a base URL,
+aborting immediately if a baseline canary probe reveals the target is a wildcard/catch-all
+responder). All four are pure Python (`requests` / stdlib `socket`) — no
 subprocess, no shell, no Nmap/Docker. Real nmap was considered for `port_scan` specifically
 (would add scan speed and version probes for silent protocols like HTTP) but deferred: it
 isn't installed on the machine the agent actually runs on (Windows, confirmed, not the WSL
