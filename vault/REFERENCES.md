@@ -78,13 +78,17 @@ read for deeper context.
 - `zip-slip-symlink-bypass.md` — archive extraction symlink traversal (HackTheBox "Desires")
 - `secnotes-analysis-dead-end.md` — confirmed dead-end analysis (TryHackMe "SecNotes")
 
-**From a real external target still in progress** (HackTheBox "Offlinea" — see
-`evals/practice_runs.md` for the full session):
+**HackTheBox "Offlinea" — fully reverse-engineered from source** (see
+`evals/practice_runs.md` sessions 3–6 for the black-box journey and the source-based correction):
+- `offlinea-full-solve.md` — **the complete intended solve**: SSRF (headless-Chrome renderer) into
+  a localhost-only Flask backend, past a PHP private-IP filter + Flask DNS-TTL check + `check_equiv`
+  anti-redirect guard (DNS rebinding, or an IPv4-mapped-IPv6 shortcut), then Python `str.format()`
+  injection in `/logs` to leak the JWT key, HS256 forge, and read the flag from `/bartender`.
 - `pdf-generator-ssrf-selenium.md` — Selenium/headless-Chrome PDF SSRF, plus a reusable
   PDF-content-stream decoder (no PDF library needed), plus a "back off from a degrading live
   target" lesson
-- `jwt-secret-and-dns-ssrf-hints.md` — reading a `requirements.txt` as a vulnerability roadmap;
-  the concrete JWT/DNS-SSRF game plan for the next attempt on this specific challenge
+- `jwt-secret-and-dns-ssrf-hints.md` — reading a `requirements.txt` as a vulnerability roadmap
+  (the recon that pointed at the JWT/DNS-SSRF path, later confirmed by source)
 
 **From external reference reading** (0xdf, ctf-wiki, writeup blogs):
 - `server-side-template-injection-ssti.md` — Jinja2/XSLT injection to RCE

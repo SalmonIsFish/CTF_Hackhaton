@@ -52,14 +52,30 @@ step to do *before* spending a large probing budget, not after.
 
 ## Status on the specific case this note came from
 
-HackTheBox "Offlinea" — not yet solved as of this note. Confirmed: `file://` scheme is
-explicitly blocked (instant rejection, "Dont try to trick me!"). Not yet confirmed: whether the
-`name` field is HTML-injectable into the rendered page (a promising untested angle — could reach
-the same Selenium-driven renderer while bypassing whatever validation is specifically written
-for the `url` parameter), or whether `secret` has any JWT-related effect. The live target
-degraded (started timing out on even the plain homepage) after repeated testing this session —
-next attempt should start with a fresh instance and go straight for the `name`-field injection
-and JWT-secret hypotheses above, rather than repeating the SSRF-scheme probing already done.
+HackTheBox "Offlinea" — not yet solved. Updated after session 3 (live Chrome browser recon,
+full write-up in `evals/practice_runs.md`):
+
+- **Internal origin confirmed: `http://127.0.0.1:8000`** — leaked by the returned PDF's own
+  print-to-PDF header (Chrome stamps the printed page's URL at the top). Public port proxies to
+  the app on internal `:8000`; the SSRF's internal target origin is now known outright.
+- **The `url` check is a positive allowlist ("must be http(s)://"), not a `file://` blocklist** —
+  `data:` URIs are rejected with the same instant "Dont try to trick me!" as `file://`. So the
+  `data:`-URI rendering primitive is dead; only http(s) passes.
+- **Every `http://` url hangs ~45s, including a CLOSED local port** (`127.0.0.1:1`). A closed port
+  hanging (rather than fast-refusing) is the tell: the guard's *own* pre-navigation step hangs on
+  every http url — best explained by a `dnspython` lookup with no resolver in the offline
+  container. This is likely the literal meaning of "Offline": the DNS-based SSRF guard can never
+  complete, so nothing downstream runs.
+- **`name`/`secret` are not reflected on the invalid-url render** — they only appear on the
+  valid-url card path, which hangs, so the name-injection hypothesis is untestable until the hang
+  is defeated.
+
+**Next attempt (fresh instance):** try `url=http://localhost:8000/` FIRST — `/etc/hosts`
+resolution may sidestep the DNS hang that IP literals hit. Read the PDF via the
+fetch-blob→`URL.createObjectURL`→full-viewport-`<iframe>`→screenshot trick (Chrome renders it and
+its header leaks internal URLs — how the `:8000` origin was found), not the manual PDF decoder.
+Strict budget: each http-triggering call risks a 45s stall and the instance degrades fast — one
+fresh instance per attempt.
 
 ## Related
 

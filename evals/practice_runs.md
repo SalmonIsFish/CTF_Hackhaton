@@ -215,6 +215,149 @@ powerful Selenium-driven renderer while completely bypassing whatever validation
 written for the `url` parameter. Separately, investigate whether `secret` has any JWT-related
 effect given `pyjwt` is a real dependency, not incidental.
 
+### Offlinea — session 3 (Opus, live Chrome browser recon, `154.57.164.72:31280`)
+
+Re-attempted on a fresh instance using the real Chrome browser (not just the agent's
+`fetch_url`), which unlocked several things prior text-only sessions couldn't see. **Still not
+solved**, but the architecture is now concretely mapped, and two prior working assumptions were
+corrected. Backed off before finishing because the instance degraded again (same expensive-Chrome
+failure mode as before — see below).
+
+**New, confirmed facts (beyond sessions 1–2):**
+1. **Internal origin is `http://127.0.0.1:8000`.** The returned PDF's own print-to-PDF *header*
+   (the URL Chrome stamps at the top of a printed page) read `127.0.0.1:8000/bartender.php`. So
+   public `:31280` proxies to the app on internal `:8000`, and the server-side headless Chrome
+   renders internal URLs. This is the single most useful new datapoint — it names the SSRF's
+   internal target origin outright.
+2. **The `url` filter is a positive ALLOWLIST, not a `file://` blocklist.** Both `file://` *and*
+   `data:text/html,...` get the instant "Dont try to trick me!" render. Session 1 only knew
+   `file://` was blocked; knowing `data:` is *also* rejected means the check is "must be
+   http(s)://", not "must not be file". That kills the `data:`-URI rendering primitive outright.
+3. **`name`/`secret` are NOT reflected on the invalid-url ("trick me") render.** Sent distinctive
+   `name`/`secret` markers alongside a rejected `data:` url — the rendered PDF showed *only* "Dont
+   try to trick me!", no marker. So name/secret only matter on the *valid-url* card path (which
+   hangs, see below) — the reflection hypothesis can't be tested until the hang is solved first.
+4. **Every `http://` url hangs (~45s+), including a CLOSED local port.** Tested `http://127.0.0.1:8000/`
+   (live app) and `http://127.0.0.1:1/` (nothing listening) — both hung the request/renderer for
+   45s. A closed port hanging is the key new signal: it rules out "single-thread Flask deadlock on
+   SSRF-to-self" as the *sole* cause (a refused connection would fail fast), and points instead at
+   the guard's **own pre-navigation step hanging on every http url** — most consistent with a
+   `dnspython` forward/reverse lookup with no resolver reachable in the offline container. "Offline"
+   is looking less like flavor and more like the literal mechanism: the DNS-based SSRF guard can't
+   complete a lookup, so nothing downstream ever runs.
+
+**Refined intended-solve hypothesis:** the guard resolves the url host (dnspython) to enforce a
+private-IP blocklist, and that lookup hangs offline. The intended bypass is probably a url that
+(a) passes the http(s) allowlist, (b) sidesteps the hanging DNS step — e.g. hostname `localhost`
+(resolved via `/etc/hosts`, no network), or a specific IP-literal form the guard special-cases —
+and (c) points Chrome at an internal resource serving the flag. The `secret`→JWT (`pyjwt`) angle
+is still completely unexplained and may be a second required stage. **Next probe to run FIRST on a
+fresh instance:** `url=http://localhost:8000/` (hosts-file resolution may not hang where IP
+literals did), read the rendered PDF via the fetch-blob→iframe→screenshot trick below.
+
+**Reusable technique unlocked this session:** to read a returned PDF *visually* instead of
+hand-decoding FlateDecode/CMap streams — `fetch('/bartender.php?...')` → `res.blob()` →
+`URL.createObjectURL(blob)` → inject a full-viewport `<iframe src=bloburl>` → screenshot. Chrome's
+native PDF viewer renders it and its print-header even leaks the internal source URL (that's how
+fact #1 was found). Much faster and more reliable than the manual PDF-text decoder in
+[[pdf-generator-ssrf-selenium]]; use that decoder only as a fallback.
+
+**Degradation, again:** after two 45s http hangs, even the plain homepage started failing to load
+and cheap same-origin GETs stopped completing — identical to session 1's degradation. Confirms the
+"recognize degradation and back off" rule is not optional for this target; a fresh instance per
+attempt, and a strict budget of http-triggering calls (each one risks a 45s stall), is mandatory.
+
+### Offlinea — session 4 (Opus, fresh instance `154.57.164.69:32240`)
+
+Retested on a genuinely fresh instance to remove session-3's degradation confound. **Biggest
+finding of all four sessions: the hang is PATH-specific on the internal target, not a blanket
+http/DNS block.**
+
+- `url=http://localhost:8000/` → returned **fast** (no hang). `localhost` (hosts-file, no network
+  DNS) behaves differently from the IP literals that hung in session 3 — OR the app special-cases
+  the internal-root URL (possibly a 302 back to `/` loop-guard; the tab landed on `/` showing the
+  live homepage, so this may not have been a real PDF render — unresolved, see caveat).
+- `url=http://localhost:8000/flag` → **hung 45s.** Same host, different path, opposite result.
+
+**Why this matters:** a blanket "the SSRF guard's DNS step hangs on all http" theory (session 3's
+best guess) is now **wrong** — a same-host request to `/` did not hang. The hang is specific to
+`/flag`. Leading hypotheses for a path-specific hang:
+1. `/flag` is auth-gated and, without the right credential, the internal render enters a
+   redirect loop / blocks — which finally gives `secret`+`pyjwt` a concrete role: the intended
+   path is likely *authorize the internal Chrome's request to `/flag`* via a JWT the `secret`
+   field controls (forge/inject a token, or set a cookie Chrome carries to `/flag`).
+2. `/flag` renders HTML that pulls a sub-resource which never loads (e.g. an external `<img>`/
+   `<script>` in an offline container), so print-to-PDF waits forever.
+3. Single-thread Flask deadlock on any *real* internal render, with `localhost:8000/` only
+   appearing fast because it was redirected/short-circuited rather than actually rendered.
+
+**Caveat / unresolved:** could not confirm whether `localhost:8000/` produced a real PDF or a
+redirect — the follow-up fetch to inspect its exact status/content-type hung because the instance
+had already degraded from the `/flag` stall. This is the first thing to nail down next time.
+
+**Next attempt (fresh instance), in order, hard budget ~3 http calls:**
+1. `fetch` (not navigate) `url=http://localhost:8000/` and read status/content-type/size ONLY
+   (no heavy iframe render) — is it `application/pdf` (real render) or a `3xx` redirect?
+2. Understand `secret`: submit a distinctive `secret` and inspect whether bartender.php sets a
+   cookie or returns/embeds a JWT anywhere; test `alg:none` / secret-as-HS256-key on any token found.
+3. Only then retry `/flag` *with* whatever auth mechanism secret provides.
+
+### Offlinea — session 5 (Opus, fresh instance `154.57.164.72:31383`)
+
+Answered session 4's caveat and found the loop-guard, but hit the same degradation wall.
+
+- **`url=http://localhost:8000/...` → 302 redirect to `/` (the homepage), NOT a PDF render.**
+  Confirmed for both `/` and `/images/bar.png`: after navigating to `/bartender.php?url=...`, the
+  browser ends up on the live homepage at `/` (verified via `get_page_text` — the interactive form
+  is present, not a PDF viewer). So the app has an explicit **loop-guard: SSRF pointed at its own
+  origin (`127.0.0.1:8000`) is bounced to `/`.**
+- Combined with external `http://` hanging (offline, no egress), this means the `url` parameter
+  has **no usable SSRF target by design** — self is redirected, external hangs. The `url` SSRF
+  angle that sessions 1–4 chased is very likely a **deliberate dead end**.
+- **The homepage pulls an EXTERNAL Google Font** (`fonts.googleapis.com/css2?family=Press+Start+2P`).
+  In an offline container the server-side Chrome would stall loading it — a plausible *additional*
+  contributor to render hangs whenever a rendered page includes that font.
+- `/flag` still hangs (vs `/` and `/images` redirecting) — unresolved why it differs from other
+  localhost paths; possibly its handler blocks (self-deadlock on the pre-check `requests.get`, or
+  it waits on the external font/another resource).
+
+**Reframed conclusion — the likely intended bug is HTML injection via `name` (or `secret`) into
+the rendered CARD, reaching `file:///flag` at the card's own origin, NOT url SSRF.** The blocker
+is a catch-22: the full card (which would reflect `name`) only renders for a *valid* url, and no
+valid url renders (self→redirect, external→hang). The untested escape: a url that passes the
+http(s) allowlist but **fails fast** (e.g. `http://localhost:1/` or `http://127.0.0.1:1/`, a
+refused port) so the card's embedded `url` resource errors instantly and the card renders *with
+`name` reflected* — then `name=<iframe src="file:///flag.txt">` reads the flag if headless Chrome
+runs with relaxed file access. Session 3 tried `127.0.0.1:1` but on an already-degraded instance
+(hung); must retry on a fresh one. **This is the #1 thing to try next, on a fresh instance:**
+`url=http://127.0.0.1:1/` + `name=REFLECTTEST<b>X</b>` — first just confirm whether `name` renders
+into the card at all, before adding the file:// payload.
+
+**Strategic note:** black-box iteration is extremely slow here (each instance dies after ~2–3
+render calls). This is an HTB challenge with a downloadable source bundle (the user already had its
+`requirements.txt`). **Getting `app.py`/the Flask source would collapse all remaining ambiguity
+instantly** — the exact filter, the loop-guard/redirect logic, how `/flag` is gated, and how
+`secret`+`pyjwt` are used. Strongly prefer that over more blind probing.
+
+### Offlinea — session 6 (SOURCE OBTAINED — fully reverse-engineered)
+
+User provided the source bundle (`HTB Challnges/web_offlinea/`). **Full intended solution now
+documented in `vault/techniques/web/offlinea-full-solve.md`.** Summary: SSRF (via the
+headless-Chrome `/generate` renderer) into the localhost-only Flask backend (`:5000`), past a
+PHP private-IP filter + a Flask DNS-TTL≥40 check + a `check_equiv` anti-redirect guard — intended
+bypass is **DNS rebinding** (multi-A-record, TTL≥40; possible no-infra shortcut via IPv4-mapped
+IPv6 `[::ffff:7f00:1]` if it survives `check_equiv`). Then **Python `str.format()` injection** in
+`/logs` (`{logify.__globals__[app].config[SECRET_KEY]}`) to leak the random JWT key, **forge an
+HS256 `{"is_admin":true}` token**, and read the flag from `/bartender` (the flag is a `secrets` DB
+row, `name='oldest_user_of_bartender'`).
+
+**Corrections to earlier black-box theories (all wrong):** the `http://` "hangs" were NOT a DNS
+guard — they were Selenium's `set_page_load_timeout(40)` firing on unreachable hosts (offline = no
+HTTP egress; DNS via 8.8.8.8 works). "localhost redirects to /" was PHP's private-range block →
+`header('location: /pdfs/no_way.pdf')`. There is no special `/flag` route; the flag is in SQLite,
+gated by the forgeable JWT. Lesson reinforced: **get the source before theorizing** — 5 black-box
+sessions produced a plausible-but-wrong model that source corrected in minutes.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`
