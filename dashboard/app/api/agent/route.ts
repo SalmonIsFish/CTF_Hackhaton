@@ -1,90 +1,55 @@
-// export async function POST(req: Request) {
+import { createUIMessageStream, createUIMessageStreamResponse } from "ai";
 
-//   const { messages } = await req.json();
-
-//   return new Response(
-//     `[stub] Recon step -> Decode step -> Candidate flag: flag{stub_placeholder}`
-//   );
-
-// }
-
-// export async function POST(req: Request) {
-
-//   return new Response(
-// `
-// Calling: identify_and_decode
-
-// Tool args:
-// {
-//   "file": "challenge.png"
-// }
-
-// Tool result:
-// Decoded hidden message successfully
-
-
-// Calling: flag_validator
-
-// Tool result:
-// Flag format verified
-
-
-// Final result:
-// flag{stub_placeholder}
-// `
-//   );
-
-// }
-
-
-// import { streamText } from "ai";
-
-// export async function POST(req: Request) {
-
-//   const { messages } = await req.json();
-
-//   const result = streamText({
-//     model: "google/gemini-2.0-flash",
-//     prompt:
-//       "Simulate CTF agent execution. Find flag{stub_placeholder}",
-//   });
-
-
-//   return result.toDataStreamResponse();
-
-// }
-
-
-
-
-import { streamText } from "ai";
+// Proxies the dashboard chat UI to the Python agent (agent/api.py), started
+// separately with `uvicorn agent.api:app --reload --port 8000`. Override with
+// AGENT_API_URL in dashboard/.env.local if the FastAPI bridge runs elsewhere.
+const AGENT_API_URL = process.env.AGENT_API_URL ?? "http://localhost:8000";
 
 export async function POST(req: Request) {
-
   const { messages } = await req.json();
+  const lastMessage = messages[messages.length - 1];
 
-  const lastMessage =
-    messages[messages.length - 1];
+  const prompt = (lastMessage?.parts ?? [])
+    .filter((part: { type: string }) => part.type === "text")
+    .map((part: { text: string }) => part.text)
+    .join("");
 
+  const stream = createUIMessageStream({
+    execute: async ({ writer }) => {
+      const id = crypto.randomUUID();
+      writer.write({ type: "text-start", id });
 
-  const result = streamText({
-    model: "google/gemini-2.0-flash",
-    prompt: `
-You are a CTF solving agent.
+      let text: string;
+      try {
+        const res = await fetch(`${AGENT_API_URL}/solve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        });
 
-Challenge:
-${lastMessage.content}
+        if (!res.ok) {
+          const detail = await res.text();
+          text = `Agent API error (${res.status}): ${detail}`;
+        } else {
+          const result = await res.json();
+          text = [
+            `Category: ${result.category ?? "unknown"}`,
+            `Steps: ${result.steps}`,
+            "",
+            result.final_answer ?? "",
+            result.flag ? `\nFlag: ${result.flag}` : "",
+          ].join("\n");
+        }
+      } catch (err) {
+        text = `Could not reach agent API at ${AGENT_API_URL} — is \`uvicorn agent.api:app --port 8000\` running? (${
+          err instanceof Error ? err.message : String(err)
+        })`;
+      }
 
-Return:
-Recon step
-Tool call
-Result
-Flag:
-flag{stub_placeholder}
-`,
+      writer.write({ type: "text-delta", id, delta: text });
+      writer.write({ type: "text-end", id });
+    },
   });
 
-
-  return result.toDataStreamResponse();
-
+  return createUIMessageStreamResponse({ stream });
 }

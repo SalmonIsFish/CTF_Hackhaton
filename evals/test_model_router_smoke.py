@@ -70,13 +70,22 @@ result = rotating.invoke("hi")
 print(result)
 assert result == "ok from stub (calls=1)", result
 assert bad_key.calls == 1 and good_key.calls == 1, "expected exactly one attempt on each key"
-assert rotating._index == 1, "expected the sticky index to advance to the working key"
+assert rotating._cooldown_until[0] > 0, "expected the failed key to be marked in cooldown"
+assert rotating._cooldown_until[1] == 0, "expected the working key to have no cooldown"
 
-print("\n=== _RotatingChatModel: sticky index — the next call goes straight to the working key ===")
+print("\n=== _RotatingChatModel: mid-cooldown — the next call goes straight to the working key ===")
 result_2 = rotating.invoke("hi again")
 print(result_2)
 assert result_2 == "ok from stub (calls=2)", result_2
-assert bad_key.calls == 1, "expected the already-exhausted key to NOT be retried first"
+assert bad_key.calls == 1, "expected the already-exhausted key to NOT be retried while in cooldown"
+
+print("\n=== _RotatingChatModel: once cooldown elapses, list order is preferred again (self-heals) ===")
+import time as _time
+rotating._cooldown_until[0] = _time.time() - 1  # simulate the ~90s cooldown having passed
+bad_key.fail_with_quota_error = False  # simulate its RPM window having cleared
+result_3 = rotating.invoke("hi a third time")
+assert result_3 == "ok from stub (calls=2)", result_3
+assert bad_key.calls == 2, "expected the recovered key to be preferred over the still-good one, per list order"
 
 print("\n=== _RotatingChatModel: every key exhausted re-raises the last quota error ===")
 all_bad = _RotatingChatModel([_StubModel(fail_with_quota_error=True), _StubModel(fail_with_quota_error=True)])
@@ -115,7 +124,7 @@ good_after_wrap = _StubModel()
 rotating_wrapped = _RotatingChatModel([bad_wrapped, good_after_wrap])
 result_wrapped = rotating_wrapped.invoke("hi")
 assert result_wrapped == "ok from stub (calls=1)", result_wrapped
-assert rotating_wrapped._index == 1
+assert rotating_wrapped._cooldown_until[0] > 0
 
 print("\n=== _RotatingChatModel: bind_tools() rebinds every underlying model, still rotates ===")
 bad_bind = _StubModel(fail_with_quota_error=True)
@@ -123,4 +132,4 @@ good_bind = _StubModel()
 bound = _RotatingChatModel([bad_bind, good_bind]).bind_tools(["dummy_tool"])
 bound_result = bound.invoke("hi")
 assert bound_result == "ok from stub (calls=1)", bound_result
-assert bound._index == 1
+assert bound._cooldown_until[0] > 0

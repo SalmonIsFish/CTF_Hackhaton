@@ -140,6 +140,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 import { useEffect, useState } from "react";
 
 export default function Dashboard() {
@@ -177,7 +178,7 @@ export default function Dashboard() {
     messages,
     sendMessage,
   } = useChat({
-    api: "/api/agent",
+    transport: new DefaultChatTransport({ api: "/api/agent" }),
 
   //   onFinish(message) {
   //   setIsRunning(false);
@@ -199,7 +200,13 @@ export default function Dashboard() {
 
   onFinish() {
   setIsRunning(false);
-}
+},
+
+  onError(error) {
+    setIsRunning(false);
+    setFlag("");
+    console.error("Agent request failed:", error);
+  },
   });
 
 
