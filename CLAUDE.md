@@ -267,7 +267,18 @@ CTF_Hackhaton/
 │   │                                 against scanme.nmap.org (real internet target, not local)
 │   ├── run_log.jsonl             ← gitignored — local telemetry, one JSON line per completed
 │   │                                 run, written by agent/graph.py's log_run()
-│   └── practice_runs.md      ← model comparison findings + picoCTF/network results go here
+│   ├── practice_runs.md          ← full narrative log: agent traces, root-cause bug
+│   │                                 write-ups, model comparisons. BOTH solved and
+│   │                                 unsolved/in-progress targets go here — this is the
+│   │                                 primary record, chronological by session.
+│   └── solved_challenges.md      ← fast-scan INDEX only — one row per captured flag (date,
+│                                     platform, challenge, category, flag, technique, and a
+│                                     pointer back into practice_runs.md for the full
+│                                     write-up). Never a substitute for the narrative, just a
+│                                     lookup table. **Whenever a run captures a real flag:**
+│                                     write the full narrative in practice_runs.md, then add
+│                                     one matching index row here — both halves, every time,
+│                                     don't skip either one.
 └── vault/
     ├── README.md              ← placeholder, explains folder purpose
     └── Web_Placeholder.md     ← test fixture only — replace/expand with Farhan's real notes

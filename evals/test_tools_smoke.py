@@ -7,8 +7,10 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Tool
 from agent.graph import (
     MAX_CONTEXT_MESSAGES,
     _last_tool_calls_repeated,
+    build_system_prompt,
     extract_allowed_hosts,
     extract_tool_trace,
+    message_text,
     observe,
     trim_context,
 )
@@ -185,6 +187,25 @@ live_flag_state = {
 live_flag_result = observe(live_flag_state)
 print(live_flag_result)
 assert live_flag_result == {"flag": "HTB{real_target_flag}"}, "expected the real fetch_url-derived flag, not the vault decoy"
+
+print(
+    "\n=== build_system_prompt: fabrication guardrail present (regression test -- confirmed live "
+    "against a real picoCTF target: fetch_url failed to connect, and instead of reporting that, "
+    "the model called web_search, found a public writeup of the same challenge, and confidently "
+    "stated that writeup's flag as if it had been read from the real target. picoCTF/HTB randomize "
+    "the flag per deployment -- confirmed via two writeups of the identical challenge with two "
+    "different flag suffixes -- so that flag was simply wrong) ==="
+)
+guardrail_prompt = message_text(build_system_prompt("web"))
+print(guardrail_prompt)
+assert "reference-only" in guardrail_prompt, (
+    "expected search_vault/search_skills/web_search to be explicitly marked reference-only, "
+    "not a valid flag source, in the system prompt"
+)
+assert "target is unreachable" in guardrail_prompt, (
+    "expected an explicit instruction to report an unreachable target instead of substituting "
+    "a flag found via web_search"
+)
 
 print("\n=== extract_tool_trace: pairs an AIMessage's tool call with its ToolMessage result ===")
 trace_messages = [
