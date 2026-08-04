@@ -2,7 +2,12 @@
 __pycache__/
 .claude/settings.local.json
 evals/run_log.jsonl
+.venv/
 
 # Downloaded third-party CTF challenge source (HTB/THM challenge files) -- personal practice
 # material, not part of this project, and not ours to redistribute.
 HTB Challnges/
+
+# Obsidian's local UI state (window layout, open panes, theme) -- not shared vault content,
+# and different per person who opens the vault, so tracking it just creates merge-conflict noise.
+vault/**/.obsidian/
