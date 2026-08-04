@@ -57,15 +57,7 @@ There's now also a **blue-team/defensive option** if the organizers' rules allow
 
 **If doing Web:** nothing to build — `fetch_url` already covers it (see `agent/tools/fetch_url.py`).
 
-**If doing Forensics/Misc:**
-```
-Tool: extract_metadata
-Input: { "file_path": string }
-Output: { "metadata": object }
-(wraps exiftool or Python's `Pillow`/`exifread` to pull hidden metadata from images/files)
-```
-
-Follow the pattern already established in `agent/tools/` (a `@tool`-decorated function with a clear docstring, e.g. `agent/tools/identify_and_decode.py`) so it plugs into `agent/graph.py`'s `TOOLS` list the same way the existing ones do.
+**If doing Forensics/Misc:** already built — `extract_metadata` (`agent/tools/extract_metadata.py`), Pillow-only, reads EXIF tags plus PNG tEXt/iTXt/zTXt info-dict entries, wired into `agent/graph.py`'s `TOOLS` list and smoke-tested in `evals/test_tools_smoke.py`. Don't redo it.
 
 ### Test each tool in isolation
 `evals/test_tools_smoke.py` already does this for the existing tools (a known-good input, a known-bad input, an assertion on each) — add a matching block for whatever you build, in the same style, rather than a separate throwaway script. Run it with:

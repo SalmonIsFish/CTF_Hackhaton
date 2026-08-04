@@ -13,6 +13,7 @@ from agent.graph import (
 )
 from agent.tools import tcp_session
 from agent.tools.dir_enum import dir_enum
+from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import fetch_url
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
@@ -33,6 +34,40 @@ print(identify_and_decode.invoke({"text": "aGVsbG8gd29ybGQ="}))
 
 print("\n=== identify_and_decode: known hex (68656c6c6f -> hello) ===")
 print(identify_and_decode.invoke({"text": "68656c6c6f"}))
+
+print("\n=== extract_metadata: PNG with a tEXt chunk, expect the chunk reported ===")
+import tempfile as _tempfile  # local import, avoids polluting the module-level namespace above
+
+from PIL import Image as _Image
+from PIL.PngImagePlugin import PngInfo as _PngInfo
+
+with _tempfile.TemporaryDirectory() as _tmpdir:
+    png_path = f"{_tmpdir}/flag.png"
+    png_info = _PngInfo()
+    png_info.add_text("flag", "flag{extract_metadata_smoke_test}")
+    _Image.new("RGB", (4, 4)).save(png_path, pnginfo=png_info)
+
+    png_result = extract_metadata.invoke({"file_path": png_path})
+    print(png_result)
+    assert "flag{extract_metadata_smoke_test}" in png_result, (
+        f"expected the PNG tEXt chunk's content in the report, got {png_result}"
+    )
+    assert "format: PNG" in png_result, f"expected the image format reported, got {png_result}"
+
+    print("\n=== extract_metadata: missing file, expect a clean error string, not an exception ===")
+    missing_result = extract_metadata.invoke({"file_path": f"{_tmpdir}/does_not_exist.png"})
+    print(missing_result)
+    assert "no such file" in missing_result.lower(), f"expected a clean missing-file message, got {missing_result}"
+
+    print("\n=== extract_metadata: not an image, expect a clean error string, not an exception ===")
+    not_image_path = f"{_tmpdir}/not_an_image.txt"
+    with open(not_image_path, "w") as f:
+        f.write("just plain text, not image bytes")
+    not_image_result = extract_metadata.invoke({"file_path": not_image_path})
+    print(not_image_result)
+    assert "could not open" in not_image_result.lower(), (
+        f"expected a clean not-an-image message, got {not_image_result}"
+    )
 
 print("\n=== search_vault: known term ('cookies', present in Web_Placeholder.md) ===")
 found = search_vault.invoke({"query": "cookies"})

@@ -213,8 +213,13 @@ a while, so there's nothing left blocking him.
 - [ ] **Rashid** — finalize 2–3 CTF categories now that network/web is a confirmed real
   category (Web + Crypto + Forensics/Misc was the working assumption, not confirmed).
   `identify_and_decode`, `find_flag_pattern`, `fetch_url`, and
-  `tcp_open`/`tcp_send`/`tcp_close` are already built — don't redo them. Still open:
-  `extract_metadata` for forensics, if that category gets confirmed.
+  `tcp_open`/`tcp_send`/`tcp_close` are already built — don't redo them.
+  `extract_metadata` (`agent/tools/extract_metadata.py`) is now also built and wired into
+  `agent/graph.py`'s `TOOLS` list, for whenever Forensics/Misc gets confirmed — Pillow-only
+  (already an installed dependency), reads EXIF tags and PNG tEXt/iTXt/zTXt info-dict entries
+  (a common place a flag is hidden directly in an image's metadata rather than the pixels).
+  Smoke-tested in `evals/test_tools_smoke.py` (a real PNG with a flag in a tEXt chunk, plus
+  missing-file and not-an-image error paths — all return clean strings, never raise).
 - [ ] **Rashid** — co-run the Phase 1 validation pass once categories are picked.
 - [ ] **Hasif** — start the dashboard against the already-live API bridge:
   `uvicorn agent.api:app --reload --port 8000`, `POST /solve` and `POST /solve/stream` are

@@ -34,6 +34,7 @@ from langgraph.types import Command, interrupt
 
 from agent.model_router import get_model
 from agent.tools.dir_enum import dir_enum
+from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import fetch_url
 from agent.tools.find_flag_pattern import FLAG_PATTERN, find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
@@ -284,6 +285,7 @@ TOOLS = [
     echo,
     find_flag_pattern,
     identify_and_decode,
+    extract_metadata,
     search_vault,
     search_skills,
     web_search,
