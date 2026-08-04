@@ -12,6 +12,7 @@ from agent.graph import (
     observe,
     trim_context,
 )
+from agent.tools import fetch_url as fetch_url_module
 from agent.tools import tcp_session
 from agent.tools.dir_enum import dir_enum
 from agent.tools.extract_metadata import extract_metadata
@@ -347,6 +348,57 @@ try:
 finally:
     header_echo_httpd.shutdown()
     header_echo_httpd.server_close()
+
+print(
+    "\n=== fetch_url: search_pattern reaches a flag buried well past MAX_BODY_CHARS (8 KB) -- "
+    "regression test for a real hallucination observed live: asked to read a flag out of an "
+    "11 MB heap-dump response truncated to 8 KB, the model fabricated a plausible-looking flag "
+    "from training-data memory of a public writeup instead of admitting it couldn't see far "
+    "enough. search_pattern exists so it never has to guess ==="
+)
+
+
+class _LargeBodyHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        padding = "x" * (fetch_url_module.MAX_BODY_CHARS * 4)
+        body = f"{padding}picoCTF{{buried_past_the_truncation_cutoff}}{padding}".encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+large_body_httpd = socketserver.TCPServer(("127.0.0.1", 0), _LargeBodyHTTPHandler)
+large_body_port = large_body_httpd.server_address[1]
+large_body_thread = threading.Thread(target=large_body_httpd.serve_forever, daemon=True)
+large_body_thread.start()
+try:
+    default_result = fetch_url.invoke({"url": f"http://127.0.0.1:{large_body_port}/"})
+    assert "buried_past_the_truncation_cutoff" not in default_result, (
+        "test setup assumption broken: the flag should be past the default 8 KB cutoff"
+    )
+    assert "truncated" in default_result, "expected the default path to report truncation"
+
+    search_result = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{large_body_port}/",
+        "search_pattern": r"picoCTF\{[^}]{1,60}\}",
+    })
+    print(search_result)
+    assert "picoCTF{buried_past_the_truncation_cutoff}" in search_result, (
+        f"expected search_pattern to find the flag past the truncation cutoff, got {search_result}"
+    )
+
+    no_match_result = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{large_body_port}/",
+        "search_pattern": r"htb\{[^}]{1,60}\}",
+    })
+    print(no_match_result)
+    assert "No match" in no_match_result, f"expected a clean no-match message, got {no_match_result}"
+finally:
+    large_body_httpd.shutdown()
+    large_body_httpd.server_close()
 
 
 print("\n=== tcp_session: open/send/close against a local echo server ===")
