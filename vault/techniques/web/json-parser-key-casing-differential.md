@@ -39,6 +39,26 @@ variants first). Manually confirmed. Cross-checked against a public writeup
 
 **Full run write-up**: see `evals/practice_runs.md`, "Real HackTheBox target — 'Space Explorer'".
 
+## Recon checklist (for spotting this on a *different* challenge)
+
+- [ ] Does a gateway/proxy sit in front of a second service written in a different language?
+- [ ] Does the gateway decide to forward based on a JSON field it parses into a typed
+      struct/model (Go, Java, C#, Rust with serde, etc.)?
+- [ ] Does the gateway forward the **raw original body**, not a value it re-serializes?
+- [ ] Is the downstream service using a plain dict/object lookup (Python, JS/Node, PHP) for the
+      same field?
+- [ ] If all four are true, try duplicate/differently-cased keys for the control field before
+      looking elsewhere for a bypass.
+
+## Don't confuse with
+
+- **HTTP parameter pollution** (`?id=1&id=2`) — same "which duplicate wins" root cause, but at
+  the URL query-string level, not inside a JSON body.
+- **HTTP request smuggling** (CL/TE desync between a proxy and origin server) — a different layer
+  entirely (framing of the HTTP message itself, not JSON key resolution within one body).
+- **Case-insensitive route matching bypassing a path-based filter** — a parser differential too,
+  but over URL *paths*, not JSON object *keys*.
+
 ## Related
 
 - [[cookie-trust-auth-bypass]] — a different flavor of "two components disagree about who to

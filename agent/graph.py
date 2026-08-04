@@ -299,6 +299,30 @@ TOOLS = [
 ]
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 
+# observe() must not treat these tools' results as a candidate flag: they return the team's own
+# reference material (vault notes, skill packs, public writeups) verbatim, not anything derived
+# from the current challenge's own target -- and that reference material legitimately contains
+# real flag strings from *other*, already-solved challenges (cited as evidence in past write-ups).
+# Confirmed live: search_vault surfaced techniques/web/offlinea-full-solve.md while investigating
+# an unrelated challenge, and observe() matched Offlinea's own flag out of that note's text,
+# ending the run with a completely wrong "answer" that was never seen from the actual target.
+_REFERENCE_ONLY_TOOLS = {"search_vault", "search_skills", "web_search"}
+
+
+def observe(state: "AgentState") -> dict:
+    """Module-level (not a build_graph() closure, unlike think()/act()) so it's directly
+    unit-testable against a synthetic state -- same reasoning as trim_context() above. It
+    doesn't capture any per-provider state (model, etc.), so hoisting it out cost nothing."""
+    for message in reversed(state["messages"]):
+        if not isinstance(message, ToolMessage):
+            break
+        if message.name in _REFERENCE_ONLY_TOOLS:
+            continue
+        match = FLAG_PATTERN.search(message.content)
+        if match:
+            return {"flag": match.group(0)}
+    return {}
+
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
@@ -319,8 +343,16 @@ def build_graph(provider: str = "google"):
     def triage(state: AgentState) -> dict:
         human_messages = [m for m in state["messages"] if isinstance(m, HumanMessage)]
         prompt = human_messages[0].content if human_messages else ""
-        response = triage_model.invoke([TRIAGE_PROMPT, HumanMessage(content=str(prompt))])
-        category = message_text(response).strip().lower()
+        try:
+            response = triage_model.invoke([TRIAGE_PROMPT, HumanMessage(content=str(prompt))])
+            category = message_text(response).strip().lower()
+        except Exception:
+            # Same class of failure think() already guards against (a transient model-layer
+            # error, e.g. a real "contents are required" 500 seen live during a /solve/resume
+            # call) — this call had no guard at all, so it crashed the whole run instead of
+            # degrading. "general" still routes to a real, working system prompt/tool set;
+            # losing the category classification isn't losing the run.
+            category = "general"
         if category not in CATEGORY_SKILL_DIRS:
             category = "general"
         return {"category": category}
@@ -338,7 +370,14 @@ def build_graph(provider: str = "google"):
             # tool_calls -> route_after_think takes the existing END path) preserves whatever
             # partial state/messages already exist instead of losing the run outright.
             response = AIMessage(content=f"Model call failed, ending run: {exc}")
-        return {"messages": [response], "steps": state["steps"] + 1}
+        # .get(..., 0) rather than state["steps"]: a real live /solve/resume 500
+        # ("agent resume failed: 'steps'") was observed through the dashboard's HITL flow
+        # after several approve cycles on the same thread, not reproducible via a clean
+        # scripted replay of the same tool sequence -- points at a transient/environment
+        # condition (e.g. a double-fired resume request racing on the same in-memory
+        # checkpoint) rather than a deterministic code path. Defaulting to 0 here means a
+        # missing key degrades the step count instead of crashing the whole run.
+        return {"messages": [response], "steps": state.get("steps", 0) + 1}
 
     def invoke_tool(name: str, args: dict):
         """TOOLS_BY_NAME[name].invoke(args), but never lets a malformed tool call (e.g. a
@@ -397,15 +436,6 @@ def build_graph(provider: str = "google"):
             )
         return {"messages": tool_messages}
 
-    def observe(state: AgentState) -> dict:
-        for message in reversed(state["messages"]):
-            if not isinstance(message, ToolMessage):
-                break
-            match = FLAG_PATTERN.search(message.content)
-            if match:
-                return {"flag": match.group(0)}
-        return {}
-
     def route_after_think(state: AgentState) -> str:
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
@@ -414,7 +444,8 @@ def build_graph(provider: str = "google"):
         return "act"
 
     def route_after_observe(state: AgentState) -> str:
-        if state.get("flag") or state["steps"] >= MAX_STEPS:
+        # .get("steps", 0) rather than state["steps"] -- see think()'s matching comment.
+        if state.get("flag") or state.get("steps", 0) >= MAX_STEPS:
             close_all_sessions()
             return END
         if _last_tool_calls_repeated(state["messages"]):

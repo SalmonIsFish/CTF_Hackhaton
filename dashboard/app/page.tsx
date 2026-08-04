@@ -147,6 +147,11 @@ export default function Dashboard() {
   const [input, setInput] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [flag, setFlag] = useState("");
+  // Enforce Permissions (harness element #5): when on, a live-target tool call
+  // (fetch_url/tcp_open/port_scan) pauses on the backend and this dashboard renders
+  // Approve/Deny controls instead of letting it fire immediately. See agent/api.py's
+  // require_approval / /solve/resume for the backend half of this.
+  const [requireApproval, setRequireApproval] = useState(false);
 
   // const {
   //   messages,
@@ -238,8 +243,11 @@ export default function Dashboard() {
         .join("");
 
 
+      // Mirrors agent/tools/find_flag_pattern.py's FLAG_PATTERN -- keep the two in sync.
+      // A bare "flag{...}" literal (the original version of this regex) misses picoCTF's own
+      // format entirely: picoCTF{...} has no "flag" substring in it at all.
       const match = text.match(
-        /flag\{.*?\}/
+        /\b(?:flag|ctf|htb|picoctf)\{[^{}]{1,300}\}/i
       );
 
 
@@ -261,6 +269,8 @@ export default function Dashboard() {
 
   await sendMessage({
     text: input,
+  }, {
+    body: { requireApproval },
   });
 
   setInput("");
@@ -269,6 +279,18 @@ export default function Dashboard() {
 
   function copyFlag() {
     navigator.clipboard.writeText(flag);
+  }
+
+  // Sends a literal "approve"/"deny" chat message -- route.ts recognizes this as a
+  // response to the most recent pending-approval turn (see findPendingApproval there)
+  // rather than a new challenge prompt.
+  async function respondToApproval(decision: "approve" | "deny") {
+    setIsRunning(true);
+    await sendMessage({
+      text: decision,
+    }, {
+      body: { requireApproval },
+    });
   }
 
 
@@ -306,6 +328,15 @@ Paste challenge description, URL, or file path...
 "
           />
 
+
+          <label className="mt-4 flex items-center gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={requireApproval}
+              onChange={(e) => setRequireApproval(e.target.checked)}
+            />
+            Require approval before live network calls (HITL)
+          </label>
 
           <button
             disabled={!input.trim() || isRunning}
@@ -469,11 +500,33 @@ Paste challenge description, URL, or file path...
                   : "Agent:"}
               </b>
 
-              {m.parts.map((part, index) => (
-                <p key={index}>
-                  {part.type === "text" && part.text}
-                </p>
-              ))}
+              {m.parts.map((part, index) => {
+                if (part.type === "text") {
+                  return <p key={index}>{part.text}</p>;
+                }
+                if (part.type === "data-approval") {
+                  const isLatest = m.id === messages[messages.length - 1]?.id;
+                  return (
+                    <div key={index} className="mt-2 flex gap-3">
+                      <button
+                        disabled={!isLatest || isRunning}
+                        onClick={() => respondToApproval("approve")}
+                        className="bg-green-600 text-white px-4 py-2 rounded font-bold disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        disabled={!isLatest || isRunning}
+                        onClick={() => respondToApproval("deny")}
+                        className="bg-red-600 text-white px-4 py-2 rounded font-bold disabled:opacity-50"
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  );
+                }
+                return null;
+              })}
 
             </div>
           ))}

@@ -9,6 +9,7 @@ from agent.graph import (
     _last_tool_calls_repeated,
     extract_allowed_hosts,
     extract_tool_trace,
+    observe,
     trim_context,
 )
 from agent.tools import tcp_session
@@ -149,6 +150,41 @@ assert removed_ids == {f"msg-{i}" for i in range(overflow)}, (
     f"expected exactly the oldest {overflow} trimmable messages removed, got {removed_ids}"
 )
 
+print("\n=== observe: ignores a flag-shaped string inside a search_vault/search_skills/web_search "
+      "result (regression test -- confirmed live: search_vault surfaced a real flag from an "
+      "unrelated, already-solved challenge's vault write-up, and observe() wrongly reported it) ===")
+vault_only_state = {
+    "messages": [
+        ToolMessage(
+            content="...see techniques/web/offlinea-full-solve.md: Flag: HTB{not_this_ones_flag}...",
+            name="search_vault",
+            tool_call_id="call-1",
+        ),
+    ]
+}
+vault_only_result = observe(vault_only_state)
+print(vault_only_result)
+assert vault_only_result == {}, "a flag-shaped string from search_vault must not be reported as the answer"
+
+print("\n=== observe: still detects a real flag from a live-target tool result ===")
+live_flag_state = {
+    "messages": [
+        ToolMessage(
+            content="...a decoy from vault: HTB{decoy}...",
+            name="search_vault",
+            tool_call_id="call-1",
+        ),
+        ToolMessage(
+            content="<untrusted_data>...HTB{real_target_flag}...</untrusted_data>",
+            name="fetch_url",
+            tool_call_id="call-2",
+        ),
+    ]
+}
+live_flag_result = observe(live_flag_state)
+print(live_flag_result)
+assert live_flag_result == {"flag": "HTB{real_target_flag}"}, "expected the real fetch_url-derived flag, not the vault decoy"
+
 print("\n=== extract_tool_trace: pairs an AIMessage's tool call with its ToolMessage result ===")
 trace_messages = [
     HumanMessage(content="decode this", id="h-1"),
@@ -288,6 +324,25 @@ try:
     )
     assert "MISSING" not in quoted_header_result, (
         f"expected the quoted key to still be recognized as Content-Type, got {quoted_header_result}"
+    )
+
+    print(
+        "\n=== fetch_url: whole 'Header-Name: value' line stuffed into a header VALUE under a "
+        "throwaway key (real observed model bug: {\"undefined\": \"Content-Type: application/json\"}) "
+        "is re-split into a real key/value pair, not sent verbatim/dropped ==="
+    )
+    misplaced_header_result = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{header_echo_port}/",
+        "method": "POST",
+        "body": "a=1",
+        "headers": {"undefined": "Content-Type: application/x-www-form-urlencoded"},
+    })
+    print(misplaced_header_result)
+    assert "application/x-www-form-urlencoded" in misplaced_header_result, (
+        f"expected the re-split Content-Type header to reach the server, got {misplaced_header_result}"
+    )
+    assert "MISSING" not in misplaced_header_result, (
+        f"expected the misplaced header line to still be recognized as Content-Type, got {misplaced_header_result}"
     )
 finally:
     header_echo_httpd.shutdown()
