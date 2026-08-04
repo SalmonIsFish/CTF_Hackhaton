@@ -29,6 +29,52 @@ git push -u origin [your-branch-name]
 
 ---
 
+## COMPETITION DAY — Recon Toolkit (Nmap/Postman/Burp → Agent)
+
+**The pattern:** don't make the agent discover a target cold within its 15-step budget. A teammate
+manually recons first with a real tool, then pastes the raw output as plain text into the dashboard's
+challenge box. This already worked for real on Space Explorer — a human mapped the API with browser
+DevTools, fed the findings back into the prompt, and the agent (with HITL approval) used that grounding
+to get the flag. Screenshots don't work for this — the agent only reads text, and `extract_allowed_hosts()`
+in `agent/graph.py` derives which host it's allowed to touch purely by regex over the prompt text, so
+keeping the IP/hostname inside whatever you paste is what authorizes the agent to reach it at all.
+
+**Already installed & ready**, if the WSL box from `.agents/install_ctf_tools.sh` is set up (56/58
+verified working — see `CLAUDE.md`'s "Toolchain setup" section):
+- `nmap` — real service/version fingerprinting; the agent's own `port_scan` deliberately does *not* do
+  this (pure-Python connect + passive banner only), so a real nmap pass is a genuine upgrade, not
+  redundant. Run `nmap -sV <ip>` the moment a target's revealed, paste the plain-text output straight in.
+- `ffuf` — directory/endpoint brute-forcing for web
+- `sqlmap` — automated SQLi discovery/exploitation
+- `wireshark`/`tshark` — pcap analysis
+- `binwalk`, `exiftool`, `steghide`, `testdisk` — forensics: file carving, metadata, stego, disk recovery
+- `john`, `hashcat` — hash/password cracking
+- `radare2`, `gdb`, `ROPgadget`, `pwntools`, `ghidra` — reverse/pwn, in case a surprise binary shows up
+- `volatility3` — memory dump forensics
+
+**Zero-install, browser-only** — fastest option if a laptop isn't WSL-set-up, works with no setup lost:
+- **CyberChef** (gchq.github.io/CyberChef) — encoding/decoding chains; good manual sanity-check
+  alongside the agent's own `identify_and_decode`
+- **dCode.fr** — cipher/crypto puzzle identification and solvers
+- **factordb.com** — instant RSA modulus factor lookup
+- **jwt.io** — decode/verify JWTs for auth-bypass web challenges
+- **CrackStation** — quick hash lookup before reaching for `hashcat`
+
+**Windows-native GUI apps** — install ahead of time, not live on the day:
+- **Burp Suite Community** — intercept/replay/tamper HTTP requests for web challenges
+- **Postman** — same web-recon role, whichever teammate prefers it
+- **Wireshark for Windows** — native installer, no WSL needed, good backup
+- **HxD** — free hex editor, pairs with the `extract_metadata` tool for manual byte-level forensics
+
+**Who does what:** whoever's on a laptop when the target drops runs nmap immediately (Rashid, tool
+layer is his area); for web-flavored challenges, the other laptop teammate (Hasif) drives
+Postman/Burp/DevTools in parallel, mapping auth flow and endpoints. Both hand raw text findings to
+whoever's driving the dashboard to paste in. Leave the dashboard's "Require approval (HITL)" checkbox
+**on** for real targets — matches the organizer's HITL requirement and stops a bad agent guess from
+hammering scored infrastructure.
+
+---
+
 ## RASHID — Agent Tools & CTF Category Strategy
 
 **Your job in one sentence:** decide which CTF categories we're realistically strong at, then build and test the specific tools the agent needs to solve challenges in those categories.
