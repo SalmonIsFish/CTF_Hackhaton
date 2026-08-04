@@ -245,6 +245,44 @@ refused = fetch_url.invoke({"url": "http://127.0.0.1:1/"})
 print(refused)
 assert "failed" in refused.lower(), f"expected a clean failure message, got: {refused}"
 
+print(
+    "\n=== fetch_url: quoted header key (real observed model bug, e.g. \"'Content-Type'\") is "
+    "sanitized before sending, not sent verbatim ==="
+)
+
+
+class _HeaderEchoHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(self.headers.get("Content-Type", "MISSING").encode())
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+header_echo_httpd = socketserver.TCPServer(("127.0.0.1", 0), _HeaderEchoHTTPHandler)
+header_echo_port = header_echo_httpd.server_address[1]
+header_echo_thread = threading.Thread(target=header_echo_httpd.serve_forever, daemon=True)
+header_echo_thread.start()
+try:
+    quoted_header_result = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{header_echo_port}/",
+        "method": "POST",
+        "body": "a=1",
+        "headers": {"'Content-Type'": "application/x-www-form-urlencoded"},
+    })
+    print(quoted_header_result)
+    assert "application/x-www-form-urlencoded" in quoted_header_result, (
+        f"expected the sanitized Content-Type header to reach the server, got {quoted_header_result}"
+    )
+    assert "MISSING" not in quoted_header_result, (
+        f"expected the quoted key to still be recognized as Content-Type, got {quoted_header_result}"
+    )
+finally:
+    header_echo_httpd.shutdown()
+    header_echo_httpd.server_close()
+
 
 print("\n=== tcp_session: open/send/close against a local echo server ===")
 

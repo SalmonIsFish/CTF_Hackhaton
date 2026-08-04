@@ -358,6 +358,55 @@ HTTP egress; DNS via 8.8.8.8 works). "localhost redirects to /" was PHP's privat
 gated by the forgeable JWT. Lesson reinforced: **get the source before theorizing** — 5 black-box
 sessions produced a plausible-but-wrong model that source corrected in minutes.
 
+## Real picoCTF target — "Old Session" (Web Exploitation, Easy), no flag — real bug found and fixed
+
+First actual picoCTF run through the full agent loop (`agent/api.py`'s `/solve`, the same path
+`dashboard/`'s "Run Agent" button hits) — the eval Rashid's `TEAM_TASKS.md` brief calls for,
+previously only done against TryHackMe/HackTheBox stand-ins since no picoCTF instance had been
+spun up yet. User opened a live picoCTF instance (`dolphin-cove.picoctf.net:56243`, ~7 minute
+timer) and handed the exact challenge prompt + hints; the agent was run against it directly, not
+solved by hand first.
+
+| Field | Detail |
+|---|---|
+| Challenge | picoCTF "Old Session" — a Flask login app ("The New Twitter") whose session cookie allegedly never expires; hints point at the browser's cookie storage |
+| Category | web |
+| Steps | 15 (hit `MAX_STEPS`) |
+| Tool calls | 9 (`dir_enum` x1, `fetch_url` x6, `search_vault` x1, `search_skills` x1) |
+| Flag | **None** |
+
+**What happened:** `dir_enum` and a couple of `fetch_url` GETs correctly found `/login` and
+`/register` and confirmed a Werkzeug/Flask backend. The agent tried default creds
+(`admin`/`admin`) on `/login`, then tried registering a fresh account on `/register` — reasonable
+next steps. **Every one of those POSTs failed with `400 Bad Request`**, not because the attack
+was wrong, but because `gemini-3.5-flash-lite` sent the `Content-Type` header key wrapped in
+literal single quotes — `{"'Content-Type'": "application/x-www-form-urlencoded"}` instead of
+`{"Content-Type": "..."}`. Flask never recognized the mangled key, so `request.form` came back
+empty and Werkzeug auto-400'd on the missing form fields. The agent burned the rest of its step
+budget retrying variations of the same broken header shape and querying `search_vault`/
+`search_skills` for "flask"/"cookie" (neither surfaced the vault's own most relevant note,
+`predictable-session-id-timestamp-hash.md` from the HTB "Desires" solve — a retrieval-ranking
+gap worth another look, not chased further this session) before hitting `MAX_STEPS`. It never
+actually reached the point of inspecting the session cookie's contents, so the intended
+vulnerability itself was never tested.
+
+**Real bug found and fixed, not just observed:** this is a *third*, distinct pattern of
+`gemini-3.5-flash-lite` mangling `fetch_url`'s `headers` dict keys — CLAUDE.md already documents
+underscore-for-hyphen substitution and splitting `Content-Type: application/json` at the wrong
+colon, both "fixed" via a docstring warning alone. This run is direct evidence a docstring
+warning doesn't reliably prevent the underlying quirk. Fixed properly this time:
+`agent/tools/fetch_url.py` now strips stray surrounding quote characters from header keys
+server-side (`_clean_header_key()`) before the request ever goes out, rather than trusting the
+model to format them correctly. Covered by a new case in `evals/test_tools_smoke.py` (a local
+server that echoes back the `Content-Type` it actually received, given the exact quoted-key
+shape observed here) — passes.
+
+**Not yet re-run against a fresh instance** — the original 7-minute timer expired during this
+investigation, and hammering a second live instance back-to-back wasn't worth it once the root
+cause was clear and fixable offline. Worth a retry once a new instance is spun up, now that the
+header bug is fixed; if it still doesn't land, the cookie-inspection step itself needs a proper
+try (the agent never got that far in this run).
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

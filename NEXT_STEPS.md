@@ -129,6 +129,14 @@ in `evals/practice_runs.md`.
     Manually confirmed the real exploit (`HTB{C0SM1C-BYP4SS}`) to validate the root cause.
     This is a reasoning-depth limit, not a tooling gap — `fetch_url` could already express the
     winning request.
+    **Update (2026-08-04): re-run through the real dashboard against a fresh instance — flag
+    captured by the agent itself**, HITL-approved for both live calls. Caveat found and
+    corrected afterward: the vault already contained a challenge-specific note covering this
+    exact case (`vault/techniques/web/json-parser-key-casing-differential.md`, predating this
+    session, evidently from the "CTF Brain" vault work), so this mainly validates that
+    `search_vault`-first grounding + HITL + live tool use work correctly end-to-end — not that
+    the agent generalized the technique to a fresh instance with zero prior documentation. Full
+    write-up in `CLAUDE.md`'s 2026-08-04 session update.
   - Also the first real exercise of `require_approval`/`interrupt()` (Phase 0) against
     genuinely external targets, not just local demos — every live-target call on both
     platforms was gated and approved before firing.
@@ -206,9 +214,10 @@ these assumptions.
 
 ## Phase 3 — Teammate sync (must)
 
-As of this handoff, none of the three teammates have started their piece. Hasif is now the
-single biggest not-started risk on the team — the API bridge has been ready and tested for
-a while, so there's nothing left blocking him.
+**Update (2026-08-04): this section was stale.** Hasif's and Farhan's items below were marked
+not-started at the original handoff; both are actually done, confirmed by real evidence found
+this session (not just assumed) — corrected below rather than left to mislead the next reader.
+Rashid's items remain genuinely open.
 
 - [ ] **Rashid** — finalize 2–3 CTF categories now that network/web is a confirmed real
   category (Web + Crypto + Forensics/Misc was the working assumption, not confirmed).
@@ -220,13 +229,25 @@ a while, so there's nothing left blocking him.
   (a common place a flag is hidden directly in an image's metadata rather than the pixels).
   Smoke-tested in `evals/test_tools_smoke.py` (a real PNG with a flag in a tEXt chunk, plus
   missing-file and not-an-image error paths — all return clean strings, never raise).
-- [ ] **Rashid** — co-run the Phase 1 validation pass once categories are picked.
-- [ ] **Hasif** — start the dashboard against the already-live API bridge:
-  `uvicorn agent.api:app --reload --port 8000`, `POST /solve` and `POST /solve/stream` are
-  both live and tested; see `TEAM_TASKS.md` for the exact contract.
-- [ ] **Farhan** — write real vault content once Rashid's category list is final (only
-  placeholder `README.md` and test-fixture `Web_Placeholder.md` exist in `vault/` today) —
-  worth waiting so effort isn't spent on categories the team doesn't end up attempting.
+- [ ] **Rashid** — co-run the Phase 1 validation pass once categories are picked. First real
+  picoCTF attempt done: "Old Session" (Web, Easy) via the actual agent loop, no flag, but a real
+  bug found and fixed along the way — see `evals/practice_runs.md`'s picoCTF section. Still
+  need 4-7 more challenges across Web/Crypto/Forensics logged the same way before this item is
+  actually done.
+- [x] ~~**Hasif** — start the dashboard against the already-live API bridge~~ — done. The
+  dashboard has been wired to `agent/api.py`'s `/solve` since the 2026-08-03/04 session
+  (`CLAUDE.md`), and this session added `require_approval` (HITL) end-to-end: a checkbox in
+  `dashboard/app/page.tsx`, `dashboard/app/api/agent/route.ts` forwarding it and rendering
+  Approve/Deny controls on a pending-approval turn. Verified live against a real external HTB
+  target (see `CLAUDE.md`'s 2026-08-04 session update) — both approve and deny paths confirmed
+  working through the actual UI, not just the API directly.
+- [x] ~~**Farhan** — write real vault content~~ — done. `vault/` now holds 150+ real notes
+  (`vault/CTF_Vault/` — Concepts/Categories/Tools — and `vault/techniques/{web,crypto,forensics}/`
+  — specific, real-target-derived technique writeups, e.g. the JSON-key-casing note that let the
+  agent re-solve HackTheBox "Space Explorer" unassisted this session), confirmed by direct
+  listing, not just assumed from an old placeholder note. The original placeholder
+  `vault/Web_Placeholder.md` is now stale test fixture, not representative of the vault's actual
+  state — worth deleting next time someone's in there, not urgent on its own.
 
 ## Phase 4 — Polish (nice to have, only if time remains)
 
