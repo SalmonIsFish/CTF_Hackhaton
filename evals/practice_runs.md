@@ -407,6 +407,47 @@ cause was clear and fixable offline. Worth a retry once a new instance is spun u
 header bug is fixed; if it still doesn't land, the cookie-inspection step itself needs a proper
 try (the agent never got that far in this run).
 
+### Attempt 2 — fresh instance, flag found and correctly identified by the model
+
+Fresh instance spun up (`dolphin-cove.picoctf.net:49638`), same prompt re-run through
+`/solve`. **Result: flag found (`picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}`)** — but the API
+still reported `flag: null`, exposing a second, more serious bug (below). 12 steps, 8 tool
+calls.
+
+**The `fetch_url` header fix worked in production**, and immediately surfaced a *new*,
+previously-unseen variant of the same underlying quirk in the same run — the model tried
+`{"contentType": "application/x-www-form-urlencoded"}` (no hyphen at all, camelCase) first,
+which still 400'd since it's not a header-key-quoting issue the fix covers, then self-corrected
+to the quoted-key shape from Attempt 1 (`{"'Content-Type'": "..."}`) — which `_clean_header_key`
+now sanitizes, and the request went through with a real `200 OK`. Registration and login both
+succeeded from there.
+
+**The real vulnerability, found and exploited correctly:** after logging in, the agent hit
+`/sessions` and found the endpoint leaks *every* active session in the server's session store,
+not just the caller's own — including one belonging to `{'_permanent': True, 'key': 'admin'}`.
+It swapped its own `session` cookie for the admin one, re-requested `/`, and correctly read the
+flag out of the admin-authenticated response. This is a real account-takeover technique (session
+ID enumeration via an endpoint that shouldn't expose other users' identifiers at all) worth a
+vault technique note alongside the existing `predictable-session-id-timestamp-hash.md` and
+`cookie-trust-auth-bypass.md` from the HTB "Desires" solve, for whenever there's time to add it.
+
+**Second real bug found: `FLAG_PATTERN` didn't recognize picoCTF's own flag format.** The model
+correctly extracted `picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}` and even called
+`find_flag_pattern` on it to confirm — which returned `"No flag pattern found."` The old pattern
+(`\b(?:flag|ctf|htb)\{...\}`) needs a word boundary immediately before `ctf`, but `pico` sits
+directly against `CTF` with no boundary in between, so a bare `ctf` alternative can never match
+inside `picoCTF{`. Since `agent/graph.py`'s flag-exit/extraction logic imports this exact
+constant, the bug wasn't just cosmetic in one tool — it silently blocked the whole harness from
+ever recognizing a flag in picoCTF's own native format, the platform this eval pass exists to
+validate against. **Fixed**: added `picoctf` as an explicit alternative in `FLAG_PATTERN`
+(`agent/tools/find_flag_pattern.py`), covered by a new smoke-test case reproducing this exact
+flag string.
+
+**Read as**: this was a real solve — the agent found the actual vulnerability and the actual
+flag unassisted — that the harness itself failed to surface, not an agent reasoning failure.
+Worth a third attempt on a fresh instance now that both bugs are fixed, to confirm the API
+reports the flag correctly end-to-end rather than just proving it offline via the smoke test.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

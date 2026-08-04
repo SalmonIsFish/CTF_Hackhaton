@@ -29,6 +29,16 @@ print(find_flag_pattern.invoke({"text": "the answer is flag{abc123}, don't lose 
 print("\n=== find_flag_pattern: string with no flag ===")
 print(find_flag_pattern.invoke({"text": "just some ordinary sentence, nothing to see here"}))
 
+print("\n=== find_flag_pattern: picoCTF{...} format (real flag from a live picoCTF run) ===")
+picoctf_result = find_flag_pattern.invoke(
+    {"text": "session admin key leaked: picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}"}
+)
+print(picoctf_result)
+assert "picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}" in picoctf_result, (
+    f"expected the picoCTF-format flag to be recognized -- 'ctf' has no word boundary right "
+    f"after 'pico', which is exactly the bug this regression-tests, got {picoctf_result}"
+)
+
 print("\n=== identify_and_decode: known base64 (aGVsbG8gd29ybGQ= -> hello world) ===")
 print(identify_and_decode.invoke({"text": "aGVsbG8gd29ybGQ="}))
 
