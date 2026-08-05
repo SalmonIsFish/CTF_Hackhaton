@@ -422,6 +422,95 @@ finally:
     large_body_httpd.server_close()
 
 
+print(
+    "\n=== fetch_url: session_id persists cookies across calls (regression test for the "
+    "IntroToBurp cookie-loss bug -- the agent's own run kept dropping the session cookie on "
+    "plain GET calls, forcing an endless re-register loop instead of ever reaching an "
+    "authenticated page) ==="
+)
+
+
+class _CookieSessionHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if "sid=granted" in self.headers.get("Cookie", ""):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"authenticated")
+        else:
+            self.send_response(200)
+            self.send_header("Set-Cookie", "sid=granted; Path=/")
+            self.end_headers()
+            self.wfile.write(b"anonymous")
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+cookie_httpd = socketserver.TCPServer(("127.0.0.1", 0), _CookieSessionHTTPHandler)
+cookie_port = cookie_httpd.server_address[1]
+cookie_thread = threading.Thread(target=cookie_httpd.serve_forever, daemon=True)
+cookie_thread.start()
+try:
+    first_call = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{cookie_port}/", "session_id": "test-session-a",
+    })
+    print(first_call)
+    assert "anonymous" in first_call, f"expected the first call (no cookie yet) to be anonymous, got {first_call}"
+
+    second_call = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{cookie_port}/", "session_id": "test-session-a",
+    })
+    print(second_call)
+    assert "authenticated" in second_call, (
+        f"expected the second call, same session_id, to automatically carry the cookie the "
+        f"first response set, with no Cookie header supplied by hand, got {second_call}"
+    )
+
+    stateless_call = fetch_url.invoke({"url": f"http://127.0.0.1:{cookie_port}/"})
+    print(stateless_call)
+    assert "anonymous" in stateless_call, (
+        f"expected a call with no session_id to stay fully stateless (no bleed-over from the "
+        f"session_id path above), got {stateless_call}"
+    )
+
+    print("\n=== fetch_url: concurrent session cap is enforced ===")
+    # test-session-a from above is still open and already counts toward the cap.
+    for i in range(fetch_url_module.MAX_CONCURRENT_HTTP_SESSIONS - 1):
+        sid = f"cap-session-{i}"
+        cap_call = fetch_url.invoke({"url": f"http://127.0.0.1:{cookie_port}/", "session_id": sid})
+        assert "Refused" not in cap_call, f"expected session {sid} to open, got {cap_call}"
+
+    over_cap_call = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{cookie_port}/", "session_id": "one-too-many",
+    })
+    print(over_cap_call)
+    assert "Refused" in over_cap_call, f"expected the session cap to be enforced, got {over_cap_call}"
+    fetch_url_module.close_all_http_sessions()
+
+    print(
+        "\n=== fetch_url: expired session lifetime drops the cookie jar (falls back to a fresh "
+        "session under the same id rather than reusing stale cookies) ==="
+    )
+    expiring_first = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{cookie_port}/", "session_id": "expiring-session",
+    })
+    assert "anonymous" in expiring_first
+    fetch_url_module._http_sessions["expiring-session"]["created_at"] -= (
+        fetch_url_module.HTTP_SESSION_LIFETIME_SECONDS + 1
+    )
+    expired_call = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{cookie_port}/", "session_id": "expiring-session",
+    })
+    print(expired_call)
+    assert "anonymous" in expired_call, (
+        f"expected the expired session's cookie jar to be dropped, not reused, got {expired_call}"
+    )
+finally:
+    fetch_url_module.close_all_http_sessions()
+    cookie_httpd.shutdown()
+    cookie_httpd.server_close()
+
+
 print("\n=== tcp_session: open/send/close against a local echo server ===")
 
 

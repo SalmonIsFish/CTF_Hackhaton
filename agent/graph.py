@@ -35,7 +35,7 @@ from langgraph.types import Command, interrupt
 from agent.model_router import get_model
 from agent.tools.dir_enum import dir_enum
 from agent.tools.extract_metadata import extract_metadata
-from agent.tools.fetch_url import fetch_url
+from agent.tools.fetch_url import close_all_http_sessions, fetch_url
 from agent.tools.find_flag_pattern import FLAG_PATTERN, find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.port_scan import port_scan
@@ -455,6 +455,7 @@ def build_graph(provider: str = "google"):
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
             close_all_sessions()
+            close_all_http_sessions()
             return END
         return "act"
 
@@ -462,9 +463,11 @@ def build_graph(provider: str = "google"):
         # .get("steps", 0) rather than state["steps"] -- see think()'s matching comment.
         if state.get("flag") or state.get("steps", 0) >= MAX_STEPS:
             close_all_sessions()
+            close_all_http_sessions()
             return END
         if _last_tool_calls_repeated(state["messages"]):
             close_all_sessions()
+            close_all_http_sessions()
             return END
         return "trim_context"
 
