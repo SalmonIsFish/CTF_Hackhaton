@@ -47,6 +47,50 @@ def _is_quota_error(exc: BaseException) -> bool:
     return False
 
 
+# A separate, transient class of failure from quota exhaustion -- confirmed live: "503
+# UNAVAILABLE ... This model is currently experiencing high demand ... Please try again later."
+# Google's own message says this resolves itself; it's shared infrastructure being temporarily
+# overloaded, not a per-key problem, so rotating to a different key (the quota-error response)
+# doesn't obviously help and isn't the right response -- a short retry on the SAME key is.
+# Before this, a transient 503 hit _RotatingChatModel.invoke()'s bare `raise` (the "not a quota
+# error" path) and killed the whole run outright instead of just trying again.
+TRANSIENT_RETRY_ATTEMPTS = 3
+TRANSIENT_RETRY_BACKOFF_SECONDS = 2.0
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """True if exc, or anything in its __cause__ chain, is a transient server-side APIError
+    (503/UNAVAILABLE, 500/INTERNAL, 504/DEADLINE_EXCEEDED) -- distinct from _is_quota_error's
+    429/RESOURCE_EXHAUSTED check."""
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, APIError) and (
+            seen.code in (500, 503, 504)
+            or seen.status in ("UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED")
+        ):
+            return True
+        seen = seen.__cause__
+    return False
+
+
+def _invoke_with_transient_retry(model, messages, args, kwargs):
+    """Retry a single model.invoke() call up to TRANSIENT_RETRY_ATTEMPTS times, with a short
+    linearly-increasing backoff, ONLY for _is_transient_error failures -- any other exception
+    (including a quota error, handled one layer up by _RotatingChatModel) propagates on the
+    first attempt, unchanged."""
+    last_exc: BaseException = RuntimeError("unreachable: TRANSIENT_RETRY_ATTEMPTS must be >= 1")
+    for attempt in range(TRANSIENT_RETRY_ATTEMPTS):
+        try:
+            return model.invoke(messages, *args, **kwargs)
+        except Exception as exc:
+            if _is_transient_error(exc) and attempt < TRANSIENT_RETRY_ATTEMPTS - 1:
+                last_exc = exc
+                time.sleep(TRANSIENT_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            raise
+    raise last_exc
+
+
 class _RotatingChatModel:
     """Wraps one or more same-provider model instances (one per API key) and falls back to
     the next key when the current one hits a quota/rate-limit error, instead of failing the
@@ -62,8 +106,11 @@ class _RotatingChatModel:
     later request onto the next key (eventually the paid one) even after that window clears.
     Cooldown-based skipping self-heals: once COOLDOWN_SECONDS has passed, list order is
     consulted again, so a recovered free key is retried before the paid one. Only a
-    429/RESOURCE_EXHAUSTED error triggers rotation — this is a quota fallback, not a generic
-    retry-on-any-error mechanism."""
+    429/RESOURCE_EXHAUSTED error triggers ROTATION to a different key — this is a quota
+    fallback, not a generic retry-on-any-error mechanism. A separate, transient class of error
+    (503/UNAVAILABLE and similar -- shared infrastructure temporarily overloaded, not a
+    per-key issue) gets a few retries on the SAME key first, via _invoke_with_transient_retry,
+    before falling through to this class's own exception handling."""
 
     # Comfortably longer than Gemini free-tier's 60s RPM window (see CLAUDE.md: "confirmed 15
     # requests/minute, separate from and tighter than the documented 500/day") so a key isn't
@@ -91,7 +138,7 @@ class _RotatingChatModel:
         last_exc = None
         for i in candidates:
             try:
-                return self._models[i].invoke(messages, *args, **kwargs)
+                return _invoke_with_transient_retry(self._models[i], messages, args, kwargs)
             except Exception as exc:
                 if _is_quota_error(exc):
                     last_exc = exc

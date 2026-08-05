@@ -7,7 +7,13 @@ non-quota error propagate instead of rotating), not whether any real provider is
 """
 from google.genai.errors import APIError
 
-from agent.model_router import _is_quota_error, _load_keys, _RotatingChatModel
+from agent.model_router import (
+    TRANSIENT_RETRY_ATTEMPTS,
+    _is_quota_error,
+    _is_transient_error,
+    _load_keys,
+    _RotatingChatModel,
+)
 
 
 class _WrappedQuotaError(Exception):
@@ -18,10 +24,14 @@ class _WrappedQuotaError(Exception):
 
 
 class _StubModel:
-    def __init__(self, fail_with_quota_error: bool = False, fail_with_other_error: bool = False, fail_wrapped: bool = False):
+    def __init__(
+        self, fail_with_quota_error: bool = False, fail_with_other_error: bool = False,
+        fail_wrapped: bool = False, fail_transient_times: int = 0,
+    ):
         self.fail_with_quota_error = fail_with_quota_error
         self.fail_with_other_error = fail_with_other_error
         self.fail_wrapped = fail_wrapped
+        self.fail_transient_times = fail_transient_times
         self.calls = 0
 
     def invoke(self, messages):
@@ -41,6 +51,11 @@ class _StubModel:
                 raise _WrappedQuotaError("Error calling model") from inner
         if self.fail_with_other_error:
             raise APIError(code=400, response_json={"error": {"status": "INVALID_ARGUMENT", "message": "bad request"}})
+        if self.calls <= self.fail_transient_times:
+            raise APIError(
+                code=503,
+                response_json={"error": {"status": "UNAVAILABLE", "message": "high demand, try again later"}},
+            )
         return f"ok from stub (calls={self.calls})"
 
     def bind_tools(self, tools):
@@ -133,3 +148,68 @@ bound = _RotatingChatModel([bad_bind, good_bind]).bind_tools(["dummy_tool"])
 bound_result = bound.invoke("hi")
 assert bound_result == "ok from stub (calls=1)", bound_result
 assert bound._cooldown_until[0] > 0
+
+print(
+    "\n=== _is_transient_error: detects a 503/UNAVAILABLE APIError directly and via __cause__, "
+    "distinct from a quota error -- regression test for a real, confirmed failure: a live "
+    "'503 UNAVAILABLE ... high demand ... try again later' error hit the bare `raise` path "
+    "(not a quota error, so no rotation) and killed the whole run outright instead of retrying "
+    "a transient, self-resolving condition ==="
+)
+transient_503 = APIError(code=503, response_json={"error": {"status": "UNAVAILABLE", "message": "high demand"}})
+assert _is_transient_error(transient_503), "expected a direct 503/UNAVAILABLE to be detected"
+assert not _is_quota_error(transient_503), "a 503 must NOT be misclassified as a quota error"
+
+wrapped_transient = _WrappedQuotaError("outer")
+wrapped_transient.__cause__ = transient_503
+assert _is_transient_error(wrapped_transient), "expected a wrapped 503 to be detected via __cause__"
+
+assert not _is_transient_error(ValueError("unrelated")), "expected a plain unrelated error to not match"
+quota_503_check = APIError(code=429, response_json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "x"}})
+assert not _is_transient_error(quota_503_check), "a quota error must NOT be misclassified as transient"
+
+print(
+    "\n=== _RotatingChatModel: a transient 503 is retried on the SAME key (not rotated away "
+    "from), and succeeds once the underlying condition clears ==="
+)
+import agent.model_router as _model_router_module  # local import, avoids polluting module namespace above
+
+_sleep_calls = []
+_original_sleep = _model_router_module.time.sleep
+_model_router_module.time.sleep = lambda seconds: _sleep_calls.append(seconds)  # no real delay in tests
+try:
+    flaky_then_fine = _StubModel(fail_transient_times=TRANSIENT_RETRY_ATTEMPTS - 1)
+    never_needed = _StubModel()
+    retry_rotating = _RotatingChatModel([flaky_then_fine, never_needed])
+    retry_result = retry_rotating.invoke("hi")
+    print(retry_result)
+    assert retry_result == f"ok from stub (calls={TRANSIENT_RETRY_ATTEMPTS})", retry_result
+    assert flaky_then_fine.calls == TRANSIENT_RETRY_ATTEMPTS, (
+        f"expected exactly {TRANSIENT_RETRY_ATTEMPTS} attempts on the same key, got {flaky_then_fine.calls}"
+    )
+    assert never_needed.calls == 0, "expected the second key to never be touched -- this isn't a quota rotation"
+    assert retry_rotating._cooldown_until[0] == 0, (
+        "expected NO cooldown from a transient error -- rotation/cooldown is a quota-only mechanism"
+    )
+    assert len(_sleep_calls) == TRANSIENT_RETRY_ATTEMPTS - 1, (
+        f"expected a backoff sleep between each retry, got {_sleep_calls}"
+    )
+
+    print(
+        "\n=== _RotatingChatModel: transient errors beyond TRANSIENT_RETRY_ATTEMPTS propagate "
+        "as a normal (non-quota) error, no rotation ==="
+    )
+    always_transient = _StubModel(fail_transient_times=TRANSIENT_RETRY_ATTEMPTS + 5)
+    unreached = _StubModel()
+    exhausted_retry = _RotatingChatModel([always_transient, unreached])
+    try:
+        exhausted_retry.invoke("hi")
+        raise AssertionError("expected the persistent 503 to propagate once retries are exhausted")
+    except APIError as exc:
+        assert exc.code == 503, f"expected the original 503 to propagate, got {exc.code}"
+        assert always_transient.calls == TRANSIENT_RETRY_ATTEMPTS, (
+            f"expected exactly {TRANSIENT_RETRY_ATTEMPTS} attempts before giving up, got {always_transient.calls}"
+        )
+        assert unreached.calls == 0, "expected no rotation to the next key for a transient (non-quota) error"
+finally:
+    _model_router_module.time.sleep = _original_sleep

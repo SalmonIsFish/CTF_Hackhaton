@@ -1057,6 +1057,33 @@ New regression tests for the directory-listing behavior (all four tools) and the
 system prompt text. Full suite passes (same pre-existing unrelated flakiness aside). Logged in
 `evals/solved_challenges.md`.
 
+## Infra fix — transient 503/UNAVAILABLE errors used to kill a whole run outright
+
+While starting the "Shared Secrets" challenge (Diffie-Hellman-style shared-secret crypto, not yet
+attempted at time of writing), the agent's very first model call failed with a real live error:
+`503 UNAVAILABLE ... This model is currently experiencing high demand ... Please try again
+later.` The run ended immediately with no retry.
+
+**Diagnosis**: this is NOT a quota/rate-limit problem. `agent/model_router.py`'s
+`_RotatingChatModel` only rotates/retries on `429`/`RESOURCE_EXHAUSTED` (`_is_quota_error`) — a
+`503` doesn't match that check at all, so it hit the bare `raise` (the "not a quota error, don't
+rotate" path) and ended the run outright. A 503 is Google's own infrastructure being temporarily
+overloaded — shared across everyone hitting the model, not specific to any one key — and Google's
+own error text says explicitly this is transient. Confirmed via `GOOGLE_API_KEYS` config that
+multi-key rotation *is* set up correctly; this genuinely wasn't a "you ran out of requests"
+situation, just a different, previously-unhandled error class.
+
+**Fixed**: added `_is_transient_error()` (503/UNAVAILABLE, 500/INTERNAL, 504/DEADLINE_EXCEEDED,
+same `__cause__`-chain-walking approach as `_is_quota_error`) and
+`_invoke_with_transient_retry()` — up to 3 retries on the SAME key with a short linear backoff,
+since rotating to a different key wouldn't obviously help a shared-infrastructure overload the
+way it does for a per-key quota problem. Wired into `_RotatingChatModel.invoke()` ahead of the
+existing quota-rotation logic, so quota behavior is completely unchanged; a transient error just
+gets a few retries before falling through to the same "propagate, don't rotate" path it always
+had. New regression tests in `evals/test_model_router_smoke.py` (stub model that fails
+transiently N times then recovers; `time.sleep` mocked out so tests run instantly, no real
+delay). Full suite passes.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

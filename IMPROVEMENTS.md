@@ -15,6 +15,12 @@
 - Env-configurable CORS (`CORS_ORIGINS`).
 - Per model-call timeout (`MODEL_TIMEOUT_SECONDS`, default 60s).
 - radare2 smoke test skips gracefully without WSL instead of hanging the suite.
+- Transient-error retry (`model_router.py`'s `_invoke_with_transient_retry`, added the night of
+  training itself, not the earlier reliability pass): a real live `503 UNAVAILABLE ... high
+  demand ... try again later` killed a whole run outright, because only 429/quota errors
+  triggered any retry/rotation logic. 503/500/504 now get up to 3 retries on the SAME key
+  (rotating keys doesn't help — it's shared infra overload, not a per-key problem) before
+  propagating. See `evals/practice_runs.md` for the full write-up.
 
 ---
 
