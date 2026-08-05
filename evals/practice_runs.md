@@ -864,12 +864,36 @@ platform (CyLab Security Academy / picoCTF).
 
 **Flag**: `picoCTF{d3bugg3r_p0w3r_is_4w3s0m3_f459a369}`
 
-**Not yet done, noted rather than attempted**: giving the agent an actual SSH tool (so it could
-attempt this class of challenge autonomously) and a way to download an arbitrary binary from a
-live target without corrupting it (so `fetch_url`'s text-decode path isn't the only option feeding
-`radare2_analyze`). Both are real, identified gaps, not blockers for what this run set out to
-prove — that `radare2_analyze` itself produces correct, useful analysis against a real, unseen
-target binary.
+**Follow-up, same session — the gap above is closed.** Two new tools in `agent/tools/ssh_session.py`:
+`ssh_analyze_binary` (SFTP-fetch + `analyze_binary_bytes` in one server-side call — the binary's
+raw bytes never round-trip through the model as a giant base64 tool argument, same reasoning
+`fetch_and_decode_cipher` already applies to ciphertext) and `ssh_run` (run exactly one remote
+command with optional piped stdin, capture output — not a general-purpose shell, no command
+chaining within a call). `radare2_analyze` was refactored to expose a shared
+`analyze_binary_bytes(content, mode, symbol)` helper so both the base64 path and the SFTP path
+reuse identical, already-tested logic instead of duplicating it. Both new tools are gated through
+the same host-allowlist + optional HITL approval every other live-target tool already uses.
+`paramiko` added to `requirements.txt` (clean install, prebuilt Windows wheels, no compile step).
+
+**Re-run through the actual agent, fresh instance, same prompt a human would get off the
+platform — solved end-to-end, no hand-holding.** Triaged correctly to `reverse`. Used
+`ssh_analyze_binary` three times (`decode_password`, `sanitize`, `main`) to build a real
+understanding of the binary, not just the one function found manually above. Computed the XOR
+decode **programmatically via a `python3 -c` one-liner run over the SSH connection itself**
+(`ssh_run`) rather than hand-computing it in its own reasoning text — the system prompt's
+anti-fabrication rule held under real pressure, not just in the case it was written for. Took a
+few real, honest wrong turns getting the binary to actually accept piped input (a `printf | ...`
+pipe attempt, a `pexpect` attempt that failed since it isn't installed on the remote box, one
+call with a genuine typo in its own generated Python — `subproceess`) before succeeding via
+`ssh_run`'s `stdin_text` parameter. Reached the real flag,
+`picoCTF{d3bugg3r_p0w3r_is_4w3s0m3_f459a369}`, in 12 of its 15-step budget — the most steps any
+solved challenge in this log has needed, worth knowing if a similar RE/pwn challenge runs close to
+the ceiling. Logged in `evals/solved_challenges.md`.
+
+**Still not done, noted for later**: a general "download an arbitrary file from a live target
+without corrupting it" tool independent of SSH (so `fetch_url`'s text-decode path isn't the only
+option feeding `radare2_analyze` for, say, an HTTP-delivered binary) remains a real, separate gap
+— this session closed the SSH-specific case only.
 
 ## Models ruled out — don't retry these
 
