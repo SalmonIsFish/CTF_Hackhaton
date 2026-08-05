@@ -21,6 +21,7 @@ from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import fetch_url
 from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
+from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
@@ -48,6 +49,25 @@ print(identify_and_decode.invoke({"text": "aGVsbG8gd29ybGQ="}))
 
 print("\n=== identify_and_decode: known hex (68656c6c6f -> hello) ===")
 print(identify_and_decode.invoke({"text": "68656c6c6f"}))
+
+print(
+    "\n=== keyed_byte_decode: subtract-mode round trip (regression test for the picoCTF "
+    "'Bookmarklet' hallucination -- the model tried this arithmetic by hand, corrupted several "
+    "characters, and fabricated a flag instead of using a real tool) ==="
+)
+_keyed_plain = "picoCTF{keyed_decode_smoke_test}"
+_keyed_key = "testkey"
+_keyed_cipher = "".join(
+    chr((ord(c) + ord(_keyed_key[i % len(_keyed_key)])) % 256) for i, c in enumerate(_keyed_plain)
+)
+keyed_result = keyed_byte_decode.invoke({"text": _keyed_cipher, "key": _keyed_key, "mode": "subtract"})
+print(keyed_result)
+assert keyed_result == _keyed_plain, f"expected the exact plaintext back, got {keyed_result!r}"
+
+print("\n=== keyed_byte_decode: unsupported mode is a clean error, not an exception ===")
+bad_mode_result = keyed_byte_decode.invoke({"text": "abc", "key": "k", "mode": "rot13"})
+print(bad_mode_result)
+assert "Unsupported mode" in bad_mode_result, f"expected a clean error, got {bad_mode_result}"
 
 print("\n=== extract_metadata: PNG with a tEXt chunk, expect the chunk reported ===")
 import tempfile as _tempfile  # local import, avoids polluting the module-level namespace above
@@ -420,6 +440,59 @@ try:
 finally:
     large_body_httpd.shutdown()
     large_body_httpd.server_close()
+
+
+print(
+    "\n=== fetch_and_decode_cipher: extracts a ciphertext from a live page and decodes it in one "
+    "call, mirroring picoCTF's 'Bookmarklet' challenge shape (var encryptedFlag = \"...\";) ==="
+)
+
+
+class _BookmarkletHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = (
+            '<script>var encryptedFlag = "' + _keyed_cipher + '"; var key = "testkey";</script>'
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+bookmarklet_httpd = socketserver.TCPServer(("127.0.0.1", 0), _BookmarkletHTTPHandler)
+bookmarklet_port = bookmarklet_httpd.server_address[1]
+bookmarklet_thread = threading.Thread(target=bookmarklet_httpd.serve_forever, daemon=True)
+bookmarklet_thread.start()
+try:
+    cipher_result = fetch_and_decode_cipher.invoke({
+        "url": f"http://127.0.0.1:{bookmarklet_port}/",
+        "key": "testkey",
+        "pattern": r'encryptedFlag\s*=\s*"([^"]*)"',
+        "mode": "subtract",
+    })
+    print(cipher_result)
+    assert "<untrusted_data" in cipher_result, "expected untrusted_data wrapper"
+    assert _keyed_plain in cipher_result, (
+        f"expected the correctly decoded plaintext in the result, got {cipher_result}"
+    )
+
+    print("\n=== fetch_and_decode_cipher: pattern with no match is a clean message, not an exception ===")
+    no_match_cipher_result = fetch_and_decode_cipher.invoke({
+        "url": f"http://127.0.0.1:{bookmarklet_port}/",
+        "key": "testkey",
+        "pattern": r"notPresent=\"([^\"]*)\"",
+        "mode": "subtract",
+    })
+    print(no_match_cipher_result)
+    assert "did not match" in no_match_cipher_result, (
+        f"expected a clean no-match message, got {no_match_cipher_result}"
+    )
+finally:
+    bookmarklet_httpd.shutdown()
+    bookmarklet_httpd.server_close()
 
 
 print(

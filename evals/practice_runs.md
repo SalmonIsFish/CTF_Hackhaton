@@ -547,6 +547,61 @@ Also verified: 4 new regression tests added to `evals/test_tools_smoke.py` cover
 staying fully stateless (no bleed-over), the concurrent-session cap, and lifetime expiry
 dropping a stale cookie jar. Full smoke suite passes.
 
+## Real picoCTF target — "Bookmarklet" (Web Exploitation) — agent fabricated a flag, and the dashboard displayed it uncritically; both root causes fixed, not yet re-verified end-to-end
+
+**Not a solve — a caught fabrication, on two independent layers.** Target
+`titan.picoctf.net:59998`, a page that hands the flag to the browser pre-encrypted, plus a JS
+"bookmarklet" that decrypts it: `decryptedFlag[i] = (encryptedFlag.charCodeAt(i) -
+key.charCodeAt(i % key.length) + 256) % 256`, key `"picoctf"`. `identify_and_decode` doesn't
+cover this shape (not base64/hex/rot13), and the agent has no code-execution tool, so the model
+tried to hand-simulate the byte arithmetic character-by-character in its own reasoning text. It
+got the first 8 characters right (`picoCTF{`), visibly lost track partway through ("Wait, let's
+carefully check the characters..." repeated several times, an abandoned Python snippet it never
+actually ran), and then stated a final answer — `picoCTF{b00karn3l3ts_are_rocck_50882ef9}` —
+hedged with "(or similar instance-specific flag)". **Confirmed fabricated**: re-fetched and
+decoded the real page in one clean Python pass (no manual transcription) —
+`picoCTF{p@g3_turn3r_cebccdfe}`, nothing like what the model stated. Along the way, manually
+copy-pasting the ciphertext string through an intermediate shell/terminal step corrupted it too
+(a `UnicodeEncodeError` on the very first attempt, then silently wrong output on the second) —
+direct confirmation that hand-transcribing this string through any extra text layer is fragile
+independent of which model or human is doing it, not a one-off model quirk.
+
+**Root cause #1 (backend): no tool covered this cipher shape, so the model resorted to unreliable
+manual arithmetic instead of a real computation.** Fixed with a new
+`agent/tools/keyed_decode.py`: `keyed_byte_decode(text, key, mode)` for a repeating-key
+subtract/add/xor cipher when the ciphertext is already trusted/local, and
+`fetch_and_decode_cipher(url, key, pattern, mode)` — fetches the page, extracts the ciphertext
+via a server-side regex, and decodes it in the same call, so the exact (often non-ASCII) bytes
+never pass through the model's own text generation at all, closing the transcription-corruption
+path directly rather than just telling the model to be more careful. Both wired into
+`agent/graph.py` (`fetch_and_decode_cipher` is live-network: added to `_NETWORK_TOOL_HOST_ARG` so
+it gets the same host-allowlist/HITL gating as `fetch_url`). `_UNTRUSTED_DATA_NOTICE` (the system
+prompt's anti-hallucination guardrail) gained an explicit rule against hand-computing decodes or
+retyping non-ASCII ciphertext between tool calls, and against offering a hedged "best guess" as
+if it were a confirmed answer. 4 new regression tests in `evals/test_tools_smoke.py`
+(`keyed_byte_decode` round-trip + bad-mode error, `fetch_and_decode_cipher` extract-and-decode +
+no-match error against a local server) — full suite passes.
+
+**Root cause #2 (frontend, more severe — undermines the guardrail work for every challenge, not
+just this one): the dashboard's flag box never actually checked the backend's verification.**
+`dashboard/app/page.tsx` populated the 🚩 flag box by running its own regex
+(`/\b(?:flag|ctf|htb|picoctf)\{[^{}]{1,300}\}/i`) over the *entire* assistant message text,
+including the model's free-text reasoning — completely independent of `agent/graph.py`'s
+`observe()` node, which is the actual source of truth (`state["flag"]` is only ever set from a
+real ToolMessage match, never the model's prose). On this run, `observe()` correctly never set a
+flag — the transcript has no `Flag: ...` line from `route.ts` — but the dashboard's own regex
+still found the model's fabricated string sitting in its final answer and displayed it as if
+confirmed. Fixed: `dashboard/app/api/agent/route.ts` now writes the backend's verified
+`result.flag` (when truthy) into a dedicated `data-flag` UI message part, the same pattern
+already used for `data-approval`; `page.tsx` now reads *that* instead of regexing prose. Verified
+with `npx tsc --noEmit` and a full `npm run build` — both clean.
+
+**Not yet done**: re-run the actual agent against this challenge (or a fresh instance — the
+flag is very likely per-instance/per-session, same as every other picoCTF target here) with both
+fixes in place, to confirm `fetch_and_decode_cipher` actually gets used correctly and produces
+the real flag rather than just verifying it no longer fabricates a wrong one. Log the outcome
+here (success or otherwise) once that run happens.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

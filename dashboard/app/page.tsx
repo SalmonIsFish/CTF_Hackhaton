@@ -233,26 +233,20 @@ export default function Dashboard() {
       lastMessage.role === "assistant"
     ) {
 
-      const text = lastMessage.parts
-        .filter(
-          part => part.type === "text"
-        )
-        .map(
-          part => part.text
-        )
-        .join("");
-
-
-      // Mirrors agent/tools/find_flag_pattern.py's FLAG_PATTERN -- keep the two in sync.
-      // A bare "flag{...}" literal (the original version of this regex) misses picoCTF's own
-      // format entirely: picoCTF{...} has no "flag" substring in it at all.
-      const match = text.match(
-        /\b(?:flag|ctf|htb|picoctf)\{[^{}]{1,300}\}/i
+      // Read the backend-verified flag off a "data-flag" part (written by route.ts only when
+      // agent/graph.py's observe() actually matched a flag in a real tool result), rather than
+      // regexing the model's own free-text answer for anything flag-shaped. The regex approach
+      // this replaced was a real, observed bug: on a challenge needing a manual byte-cipher
+      // decode, the model gave up partway through and typed a fabricated flag-shaped string
+      // into its prose, hedged with "(or similar instance-specific flag)" -- the backend
+      // correctly never verified it (no Flag: line, no tool result matched it), but this box
+      // lit up with the fabrication anyway because it never checked provenance, just shape.
+      const flagPart = lastMessage.parts.find(
+        (part): part is { type: "data-flag"; data: { flag: string } } => part.type === "data-flag"
       );
 
-
-      if(match){
-        setFlag(match[0]);
+      if (flagPart) {
+        setFlag(flagPart.data.flag);
       }
 
     }

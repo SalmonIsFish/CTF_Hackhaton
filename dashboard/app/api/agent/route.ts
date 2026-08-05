@@ -55,6 +55,13 @@ export async function POST(req: Request) {
 
       let text: string;
       let approval: PendingApproval | null = null;
+      // Backend-verified flag only (agent/graph.py's observe() node, which only ever sets this
+      // from a real tool result against the live target -- never from the model's own prose).
+      // Kept separate from `text` so the UI's flag box can key off this instead of regexing the
+      // model's free-text answer, which can (and did, live) contain a fabricated flag-shaped
+      // string the model typed after giving up on a manual decode -- see the data-flag part
+      // written below and page.tsx's corresponding read of it.
+      let verifiedFlag: string | null = null;
 
       try {
         const res = pending
@@ -87,6 +94,7 @@ export async function POST(req: Request) {
               'Use the Approve / Deny buttons below (or reply "approve" / "deny").',
             ].join("\n");
           } else {
+            verifiedFlag = result.flag ?? null;
             text = [
               `Category: ${result.category ?? "unknown"}`,
               `Steps: ${result.steps}`,
@@ -107,6 +115,9 @@ export async function POST(req: Request) {
 
       if (approval) {
         writer.write({ type: "data-approval", id: crypto.randomUUID(), data: approval });
+      }
+      if (verifiedFlag) {
+        writer.write({ type: "data-flag", id: crypto.randomUUID(), data: { flag: verifiedFlag } });
       }
     },
   });
