@@ -30,13 +30,14 @@ from agent.tools.math_tools import dh_shared_secret_decrypt, modpow
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
-from agent.tools.radare2_analyze import radare2_analyze
+from agent.tools.radare2_analyze import analyze_binary_bytes, radare2_analyze
 from agent.tools.read_local_file import read_local_file
 from agent.tools.rsa_tools import extract_hidden_key, rsa_decrypt_file
 from agent.tools.crack_hash import crack_hash
 from agent.tools._local_file_check import check_local_file
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
+from agent.tools.ssh_session import ssh_analyze_binary, ssh_run
 from agent.tools.tcp_session import tcp_close, tcp_open, tcp_send
 from agent.tools.web_search import web_search
 
@@ -1481,6 +1482,16 @@ else:
     assert "not valid base64" in r2_bad_b64, f"expected a base64 error, got: {r2_bad_b64}"
 
     print(
+        "\n=== radare2_analyze: empty (0-byte) content is rejected with a clear error, not a "
+        "silent empty result -- regression test: discovered live that an empty/expired temp file "
+        "produced no error at all, just an empty <untrusted_data> block, which could read as a "
+        "successful-but-empty analysis instead of a real problem ==="
+    )
+    r2_empty = radare2_analyze.invoke({"content_b64": "", "mode": "info"})
+    print(r2_empty)
+    assert "0 bytes" in r2_empty, f"expected a clean empty-content error, got: {r2_empty}"
+
+    print(
         "\n=== radare2_analyze: a symbol value shaped like a shell/r2-command injection attempt "
         "is rejected, not passed through to the -c command string ==="
     )
@@ -1792,3 +1803,27 @@ try:
 finally:
     inspector_httpd.shutdown()
     inspector_httpd.server_close()
+
+print(
+    "\n=== ssh_analyze_binary: connection refused (127.0.0.1:1, always-refused localhost port), "
+    "expect a clean error string, not an exception ==="
+)
+ssh_analyze_refused = ssh_analyze_binary.invoke({
+    "host": "127.0.0.1", "port": 1, "username": "x", "password": "x",
+    "remote_path": "a.bin", "mode": "info",
+})
+print(ssh_analyze_refused)
+assert "failed" in ssh_analyze_refused.lower(), f"expected a clean failure message, got: {ssh_analyze_refused}"
+
+print("\n=== ssh_run: connection refused, expect a clean error string, not an exception ===")
+ssh_run_refused = ssh_run.invoke({"host": "127.0.0.1", "port": 1, "username": "x", "password": "x", "command": "id"})
+print(ssh_run_refused)
+assert "failed" in ssh_run_refused.lower(), f"expected a clean failure message, got: {ssh_run_refused}"
+
+print(
+    "\n=== analyze_binary_bytes: unknown mode is rejected cleanly -- this is the shared helper "
+    "both radare2_analyze and ssh_analyze_binary call, so one test covers both ==="
+)
+shared_mode_check = analyze_binary_bytes(b"not empty", "delete_everything")
+print(shared_mode_check)
+assert "Unknown mode" in shared_mode_check, f"expected an unknown-mode error, got: {shared_mode_check}"

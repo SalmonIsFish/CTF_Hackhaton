@@ -13,3 +13,4 @@ requests
 tavily-python
 pillow
 pypdf
+paramiko
