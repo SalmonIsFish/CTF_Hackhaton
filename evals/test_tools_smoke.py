@@ -897,6 +897,16 @@ print(r2_bad_b64)
 assert "not valid base64" in r2_bad_b64, f"expected a base64 error, got: {r2_bad_b64}"
 
 print(
+    "\n=== radare2_analyze: empty (0-byte) content is rejected with a clear error, not a silent "
+    "empty result -- regression test: discovered live that an empty/expired temp file produced no "
+    "error at all, just an empty <untrusted_data> block, which could read as a successful-but-empty "
+    "analysis instead of a real problem ==="
+)
+r2_empty = radare2_analyze.invoke({"content_b64": "", "mode": "info"})
+print(r2_empty)
+assert "0 bytes" in r2_empty, f"expected a clean empty-content error, got: {r2_empty}"
+
+print(
     "\n=== radare2_analyze: a symbol value shaped like a shell/r2-command injection attempt "
     "is rejected, not passed through to the -c command string ==="
 )

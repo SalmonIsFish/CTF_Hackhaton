@@ -818,6 +818,59 @@ Confirms both fixes, not just the direct/local-fixture verification above: the a
 `patterns` argument correctly and reached `picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` on its
 own. Logged in `evals/solved_challenges.md`.
 
+## Real picoCTF target — "Bypass Me" (Reverse Engineering, Medium) — radare2_analyze's first real-world test, flag captured
+
+**Honest framing up front**: this was **not** an autonomous agent run — `radare2_analyze` was
+called directly (`.invoke()`), not through `agent.graph`'s ReAct loop, so this validates the tool
+itself works against a real target, not that the agent can yet solve an SSH-delivered RE challenge
+end-to-end on its own. The gap: the agent has no SSH tool (`tcp_open`/`tcp_send` are raw TCP only,
+no SSH handshake/encryption), so it currently can't reach this specific challenge's binary by
+itself. Same "human-as-recon" pattern already used for Space Explorer/Cosmic Explorer, except here
+the "human" step *is* the new tool doing the actual disassembly work, not just gathering facts to
+feed back into a prompt.
+
+Challenge: password-protected setuid ELF64 (`bypassme.bin`, unstripped, real debug info, GCC 9.4.0
+C++), served via SSH (`ssh ctf-player@foggy-cliff.picoctf.net:<port>`, password given in the
+challenge text). Pulled the binary over SFTP (`paramiko`, already available in the WSL venv from
+the pwntools dependency chain) rather than fighting `fetch_url`'s text-decoding path, which would
+corrupt raw binary bytes — a real, separate gap worth remembering: **nothing in this agent's
+toolset can currently download an arbitrary binary from a live target into `radare2_analyze`'s
+`content_b64` input**; every existing test/run so far has supplied the binary directly.
+
+`radare2_analyze` walkthrough, each step invoked directly and inspected:
+1. `info` — confirmed a real ELF64, canary/NX/PIE/full RELRO, `debug_info` present.
+2. `symbols` — real demangled C++ names: `decode_password(char*)`, `auth_sequence()`,
+   `sanitize(char const*, char*)`, each with a `vaddr`.
+3. `disasm` on `decode_password` — first attempt, passing the exact symbol name from `symbols`
+   mode's output (`_Z15decode_passwordPc`), returned an **empty result with no error at all**.
+   Root cause: for a binary with debug info, r2 addresses the function under a `dbg.`-prefixed
+   flag carrying the full demangled signature (`dbg.decode_password(char*)`), not the plain
+   symbol name — confirmed directly via `r2 -c 'aaa; afl~decode_password'`. The hex `vaddr` from
+   `symbols` mode's own output (`0x1333`) addressed it correctly on the second attempt.
+   **Fixed**: docstring now documents this and tells the model to prefer the hex address.
+4. Second, unrelated bug found in the same session: a manually-placed test file in WSL's `/tmp`
+   disappeared between two back-to-back tool calls (this environment's `/tmp` cleans unusually
+   aggressively) — the resulting 0-byte read produced a silent, error-free empty
+   `<untrusted_data>` block instead of a clear failure. **Fixed**: `radare2_analyze` now checks
+   for 0-byte decoded content explicitly and returns a clear message instead.
+
+`decode_password`'s disassembly showed an 11-byte constant XORed with `0xAA` byte-by-byte into the
+output buffer. Decoded **programmatically** (`bytes(b ^ 0xaa for b in enc_bytes)`), not by hand in
+free-text reasoning — this project's own documented anti-fabrication rule exists specifically
+because hand-computed byte arithmetic has silently corrupted results before (see "Bookmarklet"
+above). Result: `SuperSecure`. Verified live: SSH'd into the same instance, ran `./bypassme.bin`,
+supplied `SuperSecure` at the password prompt, got back the real flag. Confirmed accepted on the
+platform (CyLab Security Academy / picoCTF).
+
+**Flag**: `picoCTF{d3bugg3r_p0w3r_is_4w3s0m3_f459a369}`
+
+**Not yet done, noted rather than attempted**: giving the agent an actual SSH tool (so it could
+attempt this class of challenge autonomously) and a way to download an arbitrary binary from a
+live target without corrupting it (so `fetch_url`'s text-decode path isn't the only option feeding
+`radare2_analyze`). Both are real, identified gaps, not blockers for what this run set out to
+prove — that `radare2_analyze` itself produces correct, useful analysis against a real, unseen
+target binary.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

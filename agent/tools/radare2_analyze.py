@@ -92,7 +92,13 @@ def radare2_analyze(content_b64: str, mode: str, symbol: str = "main") -> str:
     in the file, often where a flag or hint is stashed directly), "symbols" (exported/imported
     function and variable names), "disasm" (disassemble one function -- pass its name or address
     via `symbol`, defaults to "main"), "gadgets" (ROP gadget listing, for Binary Exploitation
-    once RE is done). Static analysis only -- the binary is inspected, never executed. Hard-capped
+    once RE is done). For "disasm": if the binary has debug info (check "symbols" mode's output --
+    unstripped C/C++ binaries commonly do), r2 addresses the function under a "dbg."-prefixed flag
+    with the full demangled signature (e.g. "dbg.decode_password(char*)"), not the plain symbol
+    name from "symbols" mode -- passing that plain name here will silently return an empty result
+    (confirmed live: no error, just nothing). The reliable fallback that always works is the hex
+    vaddr shown in "symbols" mode's own output for that function (e.g. "0x1333"). Static analysis
+    only -- the binary is inspected, never executed. Hard-capped
     at a 20 second timeout and an 8 KB output (truncated beyond that, same as fetch_url). Never
     raises -- invalid base64, an unknown mode, a missing WSL install, or a timeout all come back
     as a descriptive string instead of an error. The returned content is wrapped in
@@ -108,6 +114,8 @@ def radare2_analyze(content_b64: str, mode: str, symbol: str = "main") -> str:
         return f"content_b64 is not valid base64: {exc}"
     if len(content) > MAX_INPUT_BYTES:
         return f"Binary too large ({len(content)} bytes) -- capped at {MAX_INPUT_BYTES} bytes."
+    if len(content) == 0:
+        return "content_b64 decoded to 0 bytes -- nothing to analyze."
 
     safe_symbol = _sanitize_symbol(symbol) if mode == "disasm" else "main"
     if mode == "disasm" and safe_symbol is None:
