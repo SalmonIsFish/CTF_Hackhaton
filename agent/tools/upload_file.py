@@ -5,6 +5,8 @@ from urllib.parse import urlparse
 import requests
 from langchain_core.tools import tool
 
+from agent.tools._response_text import decode_response_body
+
 TIMEOUT_SECONDS = 8.0
 MAX_BODY_CHARS = 8192
 
@@ -44,7 +46,7 @@ def upload_file(
         return f"Request to {url} failed: {exc}"
 
     header_lines = "\n".join(f"{key}: {value}" for key, value in response.headers.items())
-    raw_body = response.text
+    raw_body = decode_response_body(response)
     truncated_body = raw_body[:MAX_BODY_CHARS]
     if len(raw_body) > MAX_BODY_CHARS:
         truncated_body += f"\n...[truncated, {len(raw_body) - MAX_BODY_CHARS} more chars]"

@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 import requests
 from langchain_core.tools import tool
 
+from agent.tools._response_text import decode_response_body
+
 FETCH_TIMEOUT_SECONDS = 8.0
 MAX_CIPHERTEXT_CHARS = 4096
 
@@ -91,7 +93,7 @@ def fetch_and_decode_cipher(
     except requests.RequestException as exc:
         return f"Request to {url} failed: {exc}"
 
-    match = compiled.search(response.text)
+    match = compiled.search(decode_response_body(response))
     if not match:
         return f"Pattern {pattern!r} did not match anything in the response from {url}."
     try:

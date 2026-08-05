@@ -596,11 +596,35 @@ confirmed. Fixed: `dashboard/app/api/agent/route.ts` now writes the backend's ve
 already used for `data-approval`; `page.tsx` now reads *that* instead of regexing prose. Verified
 with `npx tsc --noEmit` and a full `npm run build` — both clean.
 
-**Not yet done**: re-run the actual agent against this challenge (or a fresh instance — the
-flag is very likely per-instance/per-session, same as every other picoCTF target here) with both
-fixes in place, to confirm `fetch_and_decode_cipher` actually gets used correctly and produces
-the real flag rather than just verifying it no longer fabricates a wrong one. Log the outcome
-here (success or otherwise) once that run happens.
+**Re-run (fresh instance, `:59967`) — surfaced a third, deeper bug: `requests` silently corrupts
+non-ASCII response bodies on this real server.** `fetch_and_decode_cipher` was called correctly
+(the prompt fix worked — no manual hand-computation this time), but its own result was garbage:
+a 58-character "ciphertext" (should be 29) that decoded to nonsense. Root-caused directly: this
+picoCTF instance sends `Content-Type: text/html` with **no charset**. Per RFC 2616, `requests`
+falls back to `ISO-8859-1` for `response.text` when the server doesn't declare one — every UTF-8
+multi-byte character in the real 29-char ciphertext (e.g. "à" = bytes `C3 A0`) got decoded as two
+separate Latin-1 characters instead of one correct one, exactly doubling the length and
+corrupting every byte. Confirmed directly: `response.encoding` was `ISO-8859-1`;
+`response.apparent_encoding` (requests' own chardet/charset_normalizer guess) was **also wrong**
+(`CP949`) — so neither of requests' own encoding signals was trustworthy here. Manually decoding
+`response.content` (raw bytes) as UTF-8 gave the correct 29-char string every time.
+
+This bug wasn't new to `fetch_and_decode_cipher` — grepping showed `fetch_url.py`, `upload_file.py`,
+and `keyed_decode.py` all called `response.text` directly, all equally exposed on any live target
+that omits a charset (confirmed this is real on a real target, not a hypothetical). Fixed with a
+shared helper, `agent/tools/_response_text.py`'s `decode_response_body()`: decode
+`response.content` as UTF-8 first (the correct default for virtually all modern web content,
+matching the HTML5 spec rather than the older HTTP RFC's Latin-1 default), falling back to
+Latin-1 (which can decode any byte sequence, so this never raises) only if that fails. Wired into
+all three tools. Re-verified directly against the same live instance post-fix:
+`fetch_and_decode_cipher` now returns the correct 29-char ciphertext and decodes it to the real
+flag, confirmed matching the earlier independently-verified value:
+`picoCTF{p@g3_turn3r_cebccdfe}`. Full `evals/test_tools_smoke.py` suite still passes.
+
+**Still not done**: re-run this through the actual agent end-to-end (last attempt used the old,
+buggy tool code) to confirm it now reaches the correct flag on its own rather than falling back
+to `web_search`/further hand-computation the way it did when `fetch_and_decode_cipher` returned
+garbage. Log that outcome here once it happens.
 
 ## Models ruled out — don't retry these
 
