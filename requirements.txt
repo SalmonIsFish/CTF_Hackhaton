@@ -12,3 +12,4 @@ uvicorn
 requests
 tavily-python
 pillow
+pypdf

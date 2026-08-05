@@ -20,11 +20,14 @@ from agent.tools.dir_enum import dir_enum
 from agent.tools.fetch_fragments import fetch_and_join_fragments
 from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import fetch_url
-from agent.tools.find_flag_pattern import find_flag_pattern
+from agent.tools.find_flag_pattern import DEFAULT_PREFIXES, build_flag_pattern, find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import radare2_analyze
+from agent.tools.read_local_file import read_local_file
+from agent.tools.rsa_tools import extract_hidden_key, rsa_decrypt_file
+from agent.tools._local_file_check import check_local_file
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
 from agent.tools.tcp_session import tcp_close, tcp_open, tcp_send
@@ -44,6 +47,49 @@ print(picoctf_result)
 assert "picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}" in picoctf_result, (
     f"expected the picoCTF-format flag to be recognized -- 'ctf' has no word boundary right "
     f"after 'pico', which is exactly the bug this regression-tests, got {picoctf_result}"
+)
+
+print(
+    "\n=== build_flag_pattern: a custom competition prefix (FLAG_PREFIXES) is matched, while the "
+    "default pattern does NOT match it -- so the day's real flag format can be added without a "
+    "code change, and defaults stay unchanged when unset ==="
+)
+_custom_text = "the winning submission is HACKHATON{c0mp3t1t10n_d4y_f0rm4t} nice"
+_custom_pattern = build_flag_pattern("hackhaton")
+assert _custom_pattern.search(_custom_text), (
+    "expected build_flag_pattern('hackhaton') to match HACKHATON{...}"
+)
+_default_pattern = build_flag_pattern()
+assert not _default_pattern.search(_custom_text), (
+    "expected the default pattern (no extra prefixes) to NOT match a custom HACKHATON{...} format "
+    "-- proving the extra prefix is what enables detection, and that unset FLAG_PREFIXES is a no-op"
+)
+
+print("\n=== build_flag_pattern: all default prefixes still match, custom prefix is additive ===")
+for _prefix in DEFAULT_PREFIXES:
+    _sample = f"see {_prefix}{{still_matches_after_change}}"
+    assert _default_pattern.search(_sample), (
+        f"expected the default prefix {_prefix!r} to still match after making prefixes configurable"
+    )
+# The 4 defaults AND the extra one all match under a configured pattern (additive, not replacing).
+_both_pattern = build_flag_pattern("hackhaton")
+assert _both_pattern.search("picoCTF{a}") and _both_pattern.search("HACKHATON{b}"), (
+    "expected a configured pattern to match both the built-in defaults and the extra prefix"
+)
+
+print(
+    "\n=== build_flag_pattern: a garbage FLAG_PREFIXES value can't break the regex or the "
+    "binary/deflate false-match guard ==="
+)
+# Regex metacharacters in a fat-fingered env value must be sanitized, not spliced in raw.
+_junk_pattern = build_flag_pattern("bad(){|]prefix, , 123")
+assert _junk_pattern.search("badprefix{ok}") or _junk_pattern.search("123{ok}"), (
+    "expected junk prefixes to be sanitized to word chars and still compile into a working pattern"
+)
+# The [^{}] + length cap that stopped a deflate stream's stray '{...}' from being read as a flag
+# must survive: an over-long brace run is not a match.
+assert not _default_pattern.search("flag{" + "A" * 400 + "}"), (
+    "expected the length cap to still reject a runaway brace span (binary false-match guard)"
 )
 
 print("\n=== identify_and_decode: known base64 (aGVsbG8gd29ybGQ= -> hello world) ===")
@@ -104,6 +150,231 @@ with _tempfile.TemporaryDirectory() as _tmpdir:
     assert "could not open" in not_image_result.lower(), (
         f"expected a clean not-an-image message, got {not_image_result}"
     )
+
+    print("\n=== extract_metadata: PDF /Info dict, expect the metadata reported ===")
+    from pypdf import PdfWriter as _PdfWriter
+
+    pdf_path = f"{_tmpdir}/flag.pdf"
+    pdf_writer = _PdfWriter()
+    pdf_writer.add_blank_page(width=72, height=72)
+    pdf_writer.add_metadata({"/Author": "picoCTF{pdf_metadata_smoke_test}"})
+    with open(pdf_path, "wb") as f:
+        pdf_writer.write(f)
+
+    pdf_result = extract_metadata.invoke({"file_path": pdf_path})
+    print(pdf_result)
+    assert "picoCTF{pdf_metadata_smoke_test}" in pdf_result, (
+        f"expected the PDF /Author field's content in the report, got {pdf_result}"
+    )
+    assert "format: PDF" in pdf_result, f"expected the PDF format reported, got {pdf_result}"
+
+    print("\n=== extract_metadata: corrupt PDF (magic bytes but invalid structure), expect a clean error ===")
+    corrupt_pdf_path = f"{_tmpdir}/corrupt.pdf"
+    with open(corrupt_pdf_path, "wb") as f:
+        f.write(b"%PDF-1.4\nnot actually a valid pdf body")
+    corrupt_pdf_result = extract_metadata.invoke({"file_path": corrupt_pdf_path})
+    print(corrupt_pdf_result)
+    assert "could not open" in corrupt_pdf_result.lower(), (
+        f"expected a clean corrupt-PDF message, not an exception, got {corrupt_pdf_result}"
+    )
+
+print(
+    "\n=== read_local_file: text file, expect the content returned directly ==="
+)
+with _tempfile.TemporaryDirectory() as _tmpdir2:
+    text_path = f"{_tmpdir2}/cipher.txt"
+    with open(text_path, "w") as f:
+        f.write("picoCTF{read_local_file_text_smoke_test}")
+    text_result = read_local_file.invoke({"file_path": text_path})
+    print(text_result)
+    assert "picoCTF{read_local_file_text_smoke_test}" in text_result, (
+        f"expected the text file's content in the result, got {text_result}"
+    )
+    assert "type: text" in text_result, f"expected the file type reported as text, got {text_result}"
+
+    print("\n=== read_local_file: binary file, expect a hex preview and base64 content ===")
+    enc_path = f"{_tmpdir2}/secret.enc"
+    binary_content = bytes(range(256))
+    with open(enc_path, "wb") as f:
+        f.write(binary_content)
+    enc_result = read_local_file.invoke({"file_path": enc_path})
+    print(enc_result)
+    assert "type: binary" in enc_result, f"expected the file type reported as binary, got {enc_result}"
+    import base64 as _base64  # local import, avoids polluting the module-level namespace above
+
+    assert _base64.b64encode(binary_content).decode() in enc_result, (
+        f"expected the full raw content base64-encoded in the result, got {enc_result}"
+    )
+
+    print("\n=== read_local_file: search_pattern searches the full text file, not just the cap ===")
+    large_text_path = f"{_tmpdir2}/large.txt"
+    padding = "x" * (8192 * 2)
+    with open(large_text_path, "w") as f:
+        f.write(f"{padding}picoCTF{{buried_past_the_cutoff}}{padding}")
+    default_large_result = read_local_file.invoke({"file_path": large_text_path})
+    assert "buried_past_the_cutoff" not in default_large_result, (
+        "test setup assumption broken: the flag should be past the default 8192-char cutoff"
+    )
+    assert "truncated" in default_large_result, "expected the default path to report truncation"
+
+    search_large_result = read_local_file.invoke({
+        "file_path": large_text_path, "search_pattern": r"picoCTF\{[^}]{1,60}\}",
+    })
+    print(search_large_result)
+    assert "picoCTF{buried_past_the_cutoff}" in search_large_result, (
+        f"expected search_pattern to find the flag past the truncation cutoff, got {search_large_result}"
+    )
+
+    print("\n=== read_local_file: missing file, expect a clean error string, not an exception ===")
+    missing_file_result = read_local_file.invoke({"file_path": f"{_tmpdir2}/does_not_exist.enc"})
+    print(missing_file_result)
+    assert "no such file" in missing_file_result.lower(), (
+        f"expected a clean missing-file message, got {missing_file_result}"
+    )
+
+print(
+    "\n=== extract_hidden_key + rsa_decrypt_file: end-to-end RSA-key-in-image-metadata pipeline "
+    "-- regression test for a real, confirmed fabrication: given this exact challenge shape with "
+    "no tool to actually perform the steps, the model never called any tool at all and stated a "
+    "flag with a made-up suffix instead. Real flag: picoCTF{rs4_k3y_1n_1mg_4eedd678}, recovered "
+    "here via the actual tools end to end, not by hand ==="
+)
+from cryptography.hazmat.primitives import serialization as _serialization
+from cryptography.hazmat.primitives.asymmetric import padding as _rsa_padding
+from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+
+with _tempfile.TemporaryDirectory() as _tmpdir3:
+    _private_key = _rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    _pem_bytes = _private_key.private_bytes(
+        encoding=_serialization.Encoding.PEM,
+        format=_serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=_serialization.NoEncryption(),
+    )
+    _plaintext = b"picoCTF{rsa_tools_smoke_test}"
+    _ciphertext = _private_key.public_key().encrypt(_plaintext, _rsa_padding.PKCS1v15())
+
+    stego_image_path = f"{_tmpdir3}/image.jpg"
+    stego_png_info = _PngInfo()  # PNG for simplicity -- extract_hidden_key reads via Pillow's
+    # generic .info dict, same mechanism regardless of JPEG/PNG, matching the real challenge shape
+    stego_png_info.add_text("comment", _pem_bytes.hex())
+    _Image.new("RGB", (4, 4)).save(stego_image_path.replace(".jpg", ".png"), pnginfo=stego_png_info)
+    stego_image_path = stego_image_path.replace(".jpg", ".png")
+
+    ciphertext_path = f"{_tmpdir3}/flag.enc"
+    with open(ciphertext_path, "wb") as f:
+        f.write(_ciphertext)
+
+    key_out_path = f"{_tmpdir3}/private.pem"
+    extract_result = extract_hidden_key.invoke({
+        "source_path": stego_image_path, "output_key_path": key_out_path,
+        "encoding": "hex", "field": "comment",
+    })
+    print(extract_result)
+    assert "Wrote" in extract_result, f"expected a success message, got {extract_result}"
+    assert "-----BEGIN PRIVATE KEY-----" in extract_result, (
+        f"expected the PEM preview in the result, got {extract_result}"
+    )
+
+    decrypt_result = rsa_decrypt_file.invoke({
+        "key_path": key_out_path, "ciphertext_path": ciphertext_path,
+    })
+    print(decrypt_result)
+    assert "picoCTF{rsa_tools_smoke_test}" in decrypt_result, (
+        f"expected the correct decrypted plaintext, got {decrypt_result}"
+    )
+    assert "pkcs1v15: SUCCESS" in decrypt_result, (
+        f"expected auto mode to report which padding succeeded, got {decrypt_result}"
+    )
+
+    print("\n=== extract_hidden_key: unknown metadata field is a clean error, not an exception ===")
+    unknown_field_result = extract_hidden_key.invoke({
+        "source_path": stego_image_path, "output_key_path": key_out_path,
+        "encoding": "hex", "field": "does_not_exist",
+    })
+    print(unknown_field_result)
+    assert "not found" in unknown_field_result.lower(), (
+        f"expected a clean field-not-found message, got {unknown_field_result}"
+    )
+
+    print("\n=== rsa_decrypt_file: missing key file is a clean error, not an exception ===")
+    missing_key_result = rsa_decrypt_file.invoke({
+        "key_path": f"{_tmpdir3}/does_not_exist.pem", "ciphertext_path": ciphertext_path,
+    })
+    print(missing_key_result)
+    assert "no such file" in missing_key_result.lower(), (
+        f"expected a clean missing-key message, got {missing_key_result}"
+    )
+
+    print("\n=== rsa_decrypt_file: wrong padding_mode alone reports failure, not a crash ===")
+    wrong_padding_result = rsa_decrypt_file.invoke({
+        "key_path": key_out_path, "ciphertext_path": ciphertext_path, "padding_mode": "oaep-sha256",
+    })
+    print(wrong_padding_result)
+    assert "Decryption failed" in wrong_padding_result, (
+        f"expected a clean decryption-failure message, got {wrong_padding_result}"
+    )
+
+    print(
+        "\n=== local-file tools: given a directory instead of a file, list its contents "
+        "instead of just saying 'no such file' -- regression test for a real, confirmed "
+        "failure: a challenge prompt gave the agent a directory path (not individual "
+        "filenames), the model reasonably tried that path directly, got a bare 'no such file' "
+        "from the old check, concluded the challenge's files didn't exist at all, and gave up "
+        "on local files entirely -- falling back to web_search and lifting a wrong flag from a "
+        "public writeup of a DIFFERENT instance of the same challenge ==="
+    )
+    dir_check_result = check_local_file(_tmpdir3)
+    print(dir_check_result)
+    assert dir_check_result is not None, "expected an error string for a directory, not None"
+    assert "is a directory, not a file" in dir_check_result, (
+        f"expected the directory case to be distinguished from 'no such file', got {dir_check_result}"
+    )
+    assert "image.png" in dir_check_result and "flag.enc" in dir_check_result, (
+        f"expected the directory's actual contents listed, got {dir_check_result}"
+    )
+
+    read_local_file_dir_result = read_local_file.invoke({"file_path": _tmpdir3})
+    print(read_local_file_dir_result)
+    assert "is a directory, not a file" in read_local_file_dir_result, (
+        f"expected read_local_file to list directory contents, got {read_local_file_dir_result}"
+    )
+
+    extract_metadata_dir_result = extract_metadata.invoke({"file_path": _tmpdir3})
+    assert "is a directory, not a file" in extract_metadata_dir_result, (
+        f"expected extract_metadata to list directory contents, got {extract_metadata_dir_result}"
+    )
+
+    extract_hidden_key_dir_result = extract_hidden_key.invoke({
+        "source_path": _tmpdir3, "output_key_path": key_out_path, "encoding": "hex",
+    })
+    assert "is a directory, not a file" in extract_hidden_key_dir_result, (
+        f"expected extract_hidden_key to list directory contents, got {extract_hidden_key_dir_result}"
+    )
+
+    rsa_decrypt_dir_result = rsa_decrypt_file.invoke({
+        "key_path": _tmpdir3, "ciphertext_path": ciphertext_path,
+    })
+    assert "is a directory, not a file" in rsa_decrypt_dir_result, (
+        f"expected rsa_decrypt_file to list directory contents, got {rsa_decrypt_dir_result}"
+    )
+
+print(
+    "\n=== build_system_prompt: priority-order guardrail present -- regression test for a real, "
+    "confirmed failure: with a matched skill-pack category, the system prompt told the model to "
+    "call search_skills 'before relying on general knowledge' unconditionally, so given a local "
+    "file challenge (category: forensics), the model's ONLY action the entire run was a "
+    "search_skills call -- it never touched the actual challenge files at all ==="
+)
+priority_prompt = message_text(build_system_prompt("forensics"))
+print(priority_prompt[:600])
+assert "PRIORITY ORDER" in priority_prompt, (
+    f"expected an explicit priority-order instruction to inspect real data before searching "
+    f"reference material, got {priority_prompt[:300]}"
+)
+assert "never the default first action when real data is already available" in priority_prompt, (
+    "expected search_vault/search_skills/web_search framed as a fallback, not the default "
+    "first move, in the system prompt"
+)
 
 print("\n=== search_vault: known term ('cookies', present in Web_Placeholder.md) ===")
 found = search_vault.invoke({"query": "cookies"})
@@ -955,43 +1226,67 @@ print(
     "\n=== radare2_analyze: real end-to-end run against a real ELF (/bin/true, pulled live "
     "through WSL) -- not a mock, exercises the actual wsl.exe/rabin2/r2 bridge ==="
 )
-import base64 as _b64  # local import: only this test block needs it
 import subprocess as _subprocess
 
-_r2_test_bin = _subprocess.run(
-    ["wsl.exe", "-e", "cat", "/bin/true"], capture_output=True, timeout=10
-).stdout
-assert _r2_test_bin, "expected /bin/true to actually produce bytes via WSL -- is WSL installed?"
-_r2_b64 = _b64.b64encode(_r2_test_bin).decode()
 
-r2_info = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "info"})
-print(r2_info)
-assert "elf" in r2_info.lower(), f"expected ELF file info from rabin2 -I, got: {r2_info}"
+def _wsl_available() -> bool:
+    """True only if the WSL bridge actually responds to a trivial command within a hard timeout.
+    A machine without WSL -- or with wsl.exe present but no distro installed, which can block or
+    prompt indefinitely -- otherwise makes this block HANG the entire smoke suite (a real,
+    observed failure mode, see evals/practice_runs.md). Probing first lets the radare2 tests SKIP
+    cleanly there instead, so the rest of the suite still runs to completion on any machine."""
+    try:
+        result = _subprocess.run(
+            ["wsl.exe", "-e", "true"], capture_output=True, timeout=8
+        )
+        return result.returncode == 0
+    except (OSError, _subprocess.SubprocessError):
+        return False
 
-print("\n=== radare2_analyze: strings mode ===")
-r2_strings = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "strings"})
-print(r2_strings)
-assert "<untrusted_data" in r2_strings, "expected the result wrapped in <untrusted_data> tags"
 
-print("\n=== radare2_analyze: unknown mode is rejected with a clear error, not a crash ===")
-r2_bad_mode = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "delete_everything"})
-print(r2_bad_mode)
-assert "Unknown mode" in r2_bad_mode, f"expected an unknown-mode error, got: {r2_bad_mode}"
+if not _wsl_available():
+    print(
+        "SKIPPED: WSL unavailable (wsl.exe not found or unresponsive within 8s). radare2_analyze "
+        "needs the WSL toolchain bridge; skipping its end-to-end tests rather than hanging the "
+        "suite. Run these on the WSL-provisioned machine to exercise the disassembler path."
+    )
+else:
+    import base64 as _b64  # local import: only this test block needs it
 
-print("\n=== radare2_analyze: invalid base64 is rejected with a clear error, not a crash ===")
-r2_bad_b64 = radare2_analyze.invoke({"content_b64": "not valid base64!!!", "mode": "info"})
-print(r2_bad_b64)
-assert "not valid base64" in r2_bad_b64, f"expected a base64 error, got: {r2_bad_b64}"
+    _r2_test_bin = _subprocess.run(
+        ["wsl.exe", "-e", "cat", "/bin/true"], capture_output=True, timeout=10
+    ).stdout
+    assert _r2_test_bin, "expected /bin/true to actually produce bytes via WSL -- is WSL installed?"
+    _r2_b64 = _b64.b64encode(_r2_test_bin).decode()
 
-print(
-    "\n=== radare2_analyze: a symbol value shaped like a shell/r2-command injection attempt "
-    "is rejected, not passed through to the -c command string ==="
-)
-r2_injection = radare2_analyze.invoke(
-    {"content_b64": _r2_b64, "mode": "disasm", "symbol": "main; !rm -rf /"}
-)
-print(r2_injection)
-assert "Invalid symbol" in r2_injection, f"expected the injection attempt rejected, got: {r2_injection}"
+    r2_info = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "info"})
+    print(r2_info)
+    assert "elf" in r2_info.lower(), f"expected ELF file info from rabin2 -I, got: {r2_info}"
+
+    print("\n=== radare2_analyze: strings mode ===")
+    r2_strings = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "strings"})
+    print(r2_strings)
+    assert "<untrusted_data" in r2_strings, "expected the result wrapped in <untrusted_data> tags"
+
+    print("\n=== radare2_analyze: unknown mode is rejected with a clear error, not a crash ===")
+    r2_bad_mode = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "delete_everything"})
+    print(r2_bad_mode)
+    assert "Unknown mode" in r2_bad_mode, f"expected an unknown-mode error, got: {r2_bad_mode}"
+
+    print("\n=== radare2_analyze: invalid base64 is rejected with a clear error, not a crash ===")
+    r2_bad_b64 = radare2_analyze.invoke({"content_b64": "not valid base64!!!", "mode": "info"})
+    print(r2_bad_b64)
+    assert "not valid base64" in r2_bad_b64, f"expected a base64 error, got: {r2_bad_b64}"
+
+    print(
+        "\n=== radare2_analyze: a symbol value shaped like a shell/r2-command injection attempt "
+        "is rejected, not passed through to the -c command string ==="
+    )
+    r2_injection = radare2_analyze.invoke(
+        {"content_b64": _r2_b64, "mode": "disasm", "symbol": "main; !rm -rf /"}
+    )
+    print(r2_injection)
+    assert "Invalid symbol" in r2_injection, f"expected the injection attempt rejected, got: {r2_injection}"
 
 print(
     "\n=== fetch_and_join_fragments: joins two comment-hidden fragments with no stray "
@@ -1240,3 +1535,58 @@ try:
 finally:
     clientside_httpd.shutdown()
     clientside_httpd.server_close()
+
+print(
+    "\n=== fetch_and_join_fragments: an empty entry in paths (e.g. ',mycss.css,myjs.js') means "
+    "'fetch base_url itself', not 'skip this position' -- regression test for picoCTF's "
+    "'Insp3ct0r' challenge: a model used exactly that leading-empty-entry convention expecting 3 "
+    "paths (root + 2 files), but the old parser silently dropped the empty entry, shrinking the "
+    "list to 2 with no signal that happened. patterns (correctly sized for 3) then failed the "
+    "1:1 length check against the silently-shrunk list, and every retry only ever adjusted regex "
+    "content, never the real cause, because nothing pointed at the dropped entry ==="
+)
+
+
+class _InspectorHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        if self.path == "/mycss.css":
+            body = b"/* part 2/3 of the flag: t3ct1ve_0r_ju5t */"
+        elif self.path == "/myjs.js":
+            body = b"/* part 3/3 of the flag: _lucky_302945a7} */"
+        else:
+            body = b"<!-- 1/3 of the flag: picoCTF{tru3_d3 -->"
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+inspector_httpd = socketserver.TCPServer(("127.0.0.1", 0), _InspectorHTTPHandler)
+inspector_port = inspector_httpd.server_address[1]
+inspector_thread = threading.Thread(target=inspector_httpd.serve_forever, daemon=True)
+inspector_thread.start()
+try:
+    inspector_patterns = "\n".join([
+        r"flag:\s*(\S+)\s*-->",
+        r"flag:\s*(\S+)\s*\*/",
+        r"flag:\s*(\S+)\s*\*/",
+    ])
+    inspector_result = fetch_and_join_fragments.invoke({
+        "base_url": f"http://127.0.0.1:{inspector_port}",
+        "paths": ",mycss.css,myjs.js",
+        "patterns": inspector_patterns,
+        "group": 1,
+    })
+    print(inspector_result)
+    assert "picoCTF{tru3_d3t3ct1ve_0r_ju5t_lucky_302945a7}" in inspector_result, (
+        f"expected the empty leading path entry to fetch base_url itself as the first fragment, "
+        f"got {inspector_result}"
+    )
+    assert "(base_url root)" in inspector_result, (
+        f"expected the empty path entry to be labeled readably in the debug listing, got {inspector_result}"
+    )
+finally:
+    inspector_httpd.shutdown()
+    inspector_httpd.server_close()

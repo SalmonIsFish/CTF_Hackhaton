@@ -8,6 +8,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Cap how long a single model call may hang. The network *tools* all have their own timeouts, but
+# a model.invoke() (think()/triage() in agent/graph.py) had none -- so a stalled Gemini request
+# could freeze a whole /solve run, and the live demo with it, indefinitely. think() already catches
+# model-layer exceptions and ends the run cleanly, so a fired timeout surfaces as a graceful end,
+# not a crash. Generous by default (a normal solve completes well within it); override via env.
+try:
+    MODEL_TIMEOUT_SECONDS = float(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
+except ValueError:
+    MODEL_TIMEOUT_SECONDS = 60.0
+
 
 def _load_keys(single_env_var: str) -> List[str]:
     """Read a comma-separated `<VAR>S` env var (e.g. GOOGLE_API_KEYS) for multi-key
@@ -99,8 +109,13 @@ def _build_rotating_model(model_name: str, provider: str, single_env_var: str) -
     if not keys:
         # No explicit key found in env — build a single model and let the provider library's
         # own default lookup (env var it reads itself, ADC, etc.) apply, same as before.
-        return [init_chat_model(model_name, model_provider=provider)]
-    return [init_chat_model(model_name, model_provider=provider, api_key=key) for key in keys]
+        return [init_chat_model(model_name, model_provider=provider, timeout=MODEL_TIMEOUT_SECONDS)]
+    return [
+        init_chat_model(
+            model_name, model_provider=provider, api_key=key, timeout=MODEL_TIMEOUT_SECONDS
+        )
+        for key in keys
+    ]
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -122,6 +137,7 @@ def _build_openrouter_overflow_model():
         model_provider="openai",
         api_key=key,
         base_url=OPENROUTER_BASE_URL,
+        timeout=MODEL_TIMEOUT_SECONDS,
     )
 
 
@@ -139,10 +155,19 @@ def _build_google_model() -> _RotatingChatModel:
     return _RotatingChatModel(models)
 
 
+# Groq uses gpt-oss-120b, NOT llama-3.3-70b-versatile: CLAUDE.md documents the Llama model as
+# reproducibly emitting malformed tool-call syntax that Groq rejects outright (400 tool_use_failed),
+# making it useless as a fallback the moment any tool call is needed. gpt-oss-120b has reliable
+# tool-call syntax (its weakness is multi-step chaining, per CLAUDE.md) -- a working fallback beats
+# a broken one. Groq is never the primary provider; this path is only reached if explicitly selected.
 _PROVIDERS = {
-    "anthropic": lambda: init_chat_model("claude-sonnet-4-6", model_provider="anthropic"),
+    "anthropic": lambda: init_chat_model(
+        "claude-sonnet-4-6", model_provider="anthropic", timeout=MODEL_TIMEOUT_SECONDS
+    ),
     "google": _build_google_model,
-    "groq": lambda: init_chat_model("llama-3.3-70b-versatile", model_provider="groq"),
+    "groq": lambda: init_chat_model(
+        "openai/gpt-oss-120b", model_provider="groq", timeout=MODEL_TIMEOUT_SECONDS
+    ),
 }
 
 

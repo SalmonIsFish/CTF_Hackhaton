@@ -745,6 +745,24 @@ returned the flag directly — a classic out-of-bounds/array-index brute-force, 
 needed beyond `fetch_url` with a manually-set `Cookie` header. Clean solve, no bugs hit, no human
 intervention.
 
+## Real picoCTF target — "logon" (Web Exploitation) — flag captured via a trusted client-supplied admin cookie
+
+Target `fickle-tempest.picoctf.net:54235`, hint "It doesn't seem to check anyone's password,
+except for Joe's." The agent tried logging in as `Joe` first (a real attempt at the prompt's
+literal suggestion), then — without needing that to succeed — went straight to `GET /flag` with
+`Cookie: admin=True` set directly, and got the flag immediately. The server trusts a
+client-supplied `admin` cookie with no server-side verification at all — the same class of bug as
+"Desires" (`evals/practice_runs.md` → "Desires": a client-supplied `username` cookie trusted
+without checking it against the real session), just even more direct here (no session lookup
+involved at all, just a raw boolean cookie). Clean solve, no bugs hit, no human intervention.
+
+## Real picoCTF target — "Where are the robots" (Web Exploitation, Easy) — flag captured via robots.txt disclosure
+
+Target `fickle-tempest.picoctf.net:57617`, hint pointing straight at `robots.txt`. Fetched
+`/robots.txt`, found it disallowing a specific page (`cc6b1.html`), fetched that page directly,
+and the flag was sitting in a `<flag>` tag in the response — the classic "robots.txt as an
+accidental map of what NOT to look at" pattern. 2 steps, no bugs hit, no human intervention.
+
 ## Real picoCTF target — "Scavenger Hunt" (Web Exploitation) — the tool computed the correct flag internally, but its own debug output tricked the flag-detection regex into reporting garbage
 
 Target `wily-courier.picoctf.net:56174`, a 5-way version of the same split-flag pattern as
@@ -887,6 +905,157 @@ suite passes.
 extra character.** Confirms the fix, not just the direct verification above: the agent used
 `fetch_and_join_fragments` with the repeated-path pattern and reached
 `picoCTF{no_clients_plz_2eb02b45}` on its own. Logged in `evals/solved_challenges.md`.
+
+## Real picoCTF target — "Insp3ct0r" (Web Exploitation) — a real fetch_and_join_fragments usability bug caused the agent to get stuck in an unrecoverable loop
+
+Target `fickle-tempest.picoctf.net:59061`, hint "there's 3 parts." Classic 3-file split (root
+page's HTML comment, `mycss.css`'s CSS comment, `myjs.js`'s CSS-style comment), directly
+analogous to "Includes"/"Scavenger Hunt." The agent correctly diagnosed the shape and tried
+`fetch_and_join_fragments` with `paths=",mycss.css,myjs.js"` — a leading empty entry, intending
+"the root page, then these two files" (3 fragments). It then got stuck: 4 consecutive calls all
+kept that exact `paths` value and only varied the regex content in `patterns`, never recovering,
+until the run ended with no flag (`</html>` cut off mid-response in the last shown step).
+
+**Root cause, confirmed directly in the tool's own code**: `paths_list = [p.strip().lstrip("/")
+for p in paths.split(",") if p.strip()]` — the `if p.strip()` filter silently dropped the leading
+empty entry, shrinking a 3-entry list down to 2 (`mycss.css`, `myjs.js`) with zero signal that
+happened. Every `patterns` argument the agent tried was correctly sized for 3 (matching its own,
+correct mental model), so every call failed the "patterns has 3 entries but paths has 2" 1:1
+check — a real, accurate error message, but one that doesn't point at the actual cause (a
+silently-dropped path entry), so the agent kept adjusting the wrong thing (regex content) across
+every retry instead of ever fixing the real problem (the path count).
+
+**Fixed**: empty entries in `paths` are no longer dropped — an empty entry is now meaningful,
+resolving to `base_url` itself with no extra path appended (exactly the convention the agent
+already tried to use). Docstring updated to document this explicitly. Verified directly against
+the live target with the agent's own original `paths=",mycss.css,myjs.js"` value: correct flag,
+`picoCTF{tru3_d3t3ct1ve_0r_ju5t_lucky?302945a7}`. Re-verified the tool's other existing behavior
+(Includes/Scavenger Hunt/dont-use-client-side fixtures, all 4 validation-error paths) still work
+correctly after this change. New regression test added and verified directly (the full
+`evals/test_tools_smoke.py` suite currently hangs on an unrelated teammate addition —
+`radare2_analyze`'s test block depends on a working WSL/`wsl.exe` bridge not available in this
+environment; everything before that section, including this new test, passes cleanly when run in
+isolation or with a bounded timeout).
+
+**Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.**
+Confirms the fix, not just the direct verification above: the agent used
+`fetch_and_join_fragments` with the same `paths=",mycss.css,myjs.js"` convention and reached
+`picoCTF{tru3_d3t3ct1ve_0r_ju5t_lucky?302945a7}` on its own. Logged in `evals/solved_challenges.md`.
+
+## Local file challenge — "StegoRSA" (Cryptography) — the worst fabrication yet: zero tool calls at all, and a real capability gap underneath it
+
+First offline/local-file challenge run this session (not a live picoCTF URL): a directory
+(`PICOCHALLENGE/StegoRSA/`) containing `image.jpg` and `flag.enc`, with hints pointing at
+metadata inspection and hex-to-key-file conversion. The prompt gave the agent a real local path.
+**The agent's response called no tool whatsoever** — not `extract_metadata`, not `read_local_file`
+(both already existed and would have worked), nothing. Instead it wrote out a plausible,
+technically-correct-*sounding* shell recipe (`exiftool`, `xxd -r -p`, `openssl pkeyutl -decrypt`)
+as if narrating a generic writeup for this well-known challenge shape, then stated
+`picoCTF{rs4_k3y_1n_1mg_66388eb3}` as if it were the result.
+
+**Confirmed fabricated, and root-caused with the real numbers.** Ran the actual pipeline for
+real: `extract_metadata` on `image.jpg` found a long hex string in the PNG-style `comment` field
+(actually JPEG, but Pillow surfaces it the same way); hex-decoding it produced a well-formed PEM
+RSA private key; using that key to decrypt `flag.enc` (PKCS1v15 padding, via the `cryptography`
+library — OAEP variants failed) produced the real flag:
+**`picoCTF{rs4_k3y_1n_1mg_4eedd678}`** — a completely different suffix from what the agent stated.
+The agent got the *shape* of a well-known challenge type right purely from pattern recognition,
+and invented a plausible-looking hex suffix instead of ever computing one.
+
+**Two root causes, both fixed:**
+
+1. **The anti-fabrication guardrail was scoped too narrowly.** `_UNTRUSTED_DATA_NOTICE`'s
+   strongest, most specific rule ("a flag is only real if it came from a LIVE-TARGET tool...")
+   named only network tools and talked entirely in terms of live web targets/HTTP — nothing in
+   the guardrail said this discipline applies equally to offline, local-file challenges. Rewrote
+   it to require an actual tool call from EITHER category (live-target network tools or
+   local-file tools: `extract_metadata`, `read_local_file`, `identify_and_decode`,
+   `keyed_byte_decode`, `extract_hidden_key`, `rsa_decrypt_file`, `radare2_analyze`), explicitly
+   stating the rule isn't relaxed just because there's no URL, and citing this exact failure by
+   name so it's a concrete, memorable example rather than an abstract rule.
+
+2. **A genuine capability gap underneath the fabrication**: even a well-intentioned run that
+   *did* call `extract_metadata`/`read_local_file` correctly would still have had no way to
+   actually perform the RSA decryption step — that requires real modular exponentiation on
+   hundreds-of-bit numbers, not something an LLM can compute by reasoning through it token by
+   token. Recognizing "inspect metadata → hex-decode → RSA-decrypt" as the right technique was
+   never the actual gap; having a way to *execute* the last step was. Added
+   `agent/tools/rsa_tools.py`: `extract_hidden_key` (pulls an encoded blob out of a file or its
+   metadata, decodes hex/base64, writes it straight to a key file — never returns the full
+   secret content, only a short preview, so a long key never has to be retyped between tool
+   calls) and `rsa_decrypt_file` (decrypts a ciphertext file with a local PEM key, trying every
+   common padding scheme automatically and reporting which one worked). Added `pypdf` was
+   already a new dependency this session (see below); this adds no new one, since `cryptography`
+   was already available transitively.
+
+   Also added, same session, prompted by this challenge's file types (PNG/JPG/PDF/ENC):
+   `agent/tools/read_local_file.py` (generic local file reader — text returned directly,
+   binary returned as a hex preview + base64, with a `search_pattern` mode for large text files)
+   and extended `agent/tools/extract_metadata.py` to also handle PDFs (`/Info` dict +
+   attachments, via the new `pypdf` dependency), not just images.
+
+**Verified end to end against the real challenge files**, not just a synthetic fixture:
+`extract_hidden_key` correctly pulled and hex-decoded the real key from `image.jpg`'s metadata,
+and `rsa_decrypt_file` correctly decrypted the real `flag.enc` with it — both using the actual
+tools, zero manual byte-copying, reproducing `picoCTF{rs4_k3y_1n_1mg_4eedd678}`. New regression
+tests for both new tools plus `read_local_file` and PDF metadata support, all passing (verified
+in isolation/bounded-timeout due to the pre-existing, unrelated `radare2_analyze`/WSL hang noted
+earlier).
+
+**Re-run through the actual agent with the RSA tools live — found two MORE real bugs before it
+actually worked**, both distinct from the fabrication above and from each other.
+
+**Bug 2: the model's only action was a single `search_skills` call, then it stopped.**
+Triage correctly classified this prompt as `forensics` (reasonable — it mentions "metadata"
+prominently). `build_system_prompt`'s category grounding said "call search_skills ... before
+relying on general knowledge" — unconditionally, for every prompt in a matched category,
+regardless of whether the prompt already hands the agent something concrete to inspect
+directly. That instruction was written for open-ended technique questions (the original eval
+suite's case 4/5, which have no concrete artifact at all), but it fires just as strongly for a
+challenge that hands the agent real local files. The model called `search_skills("metadata")`,
+got back a large, mostly-irrelevant dump of generic steganography technique notes from
+`ctf-forensics` (audio FFT, PNG palette tricks, JPEG DQT tables — nothing about RSA-key
+recovery specifically, since that content lives in `ctf-crypto`, a different pack the
+`forensics` category doesn't pull in), and the run ended there with no further tool calls and
+no flag. **Fixed**: rewrote `build_system_prompt`'s opening framing to a "PRIORITY ORDER" block
+— if the challenge already gives a concrete artifact (URL/host or local file path), touch that
+real data FIRST with the tool that actually reads it; search_vault/search_skills/web_search are
+explicitly reframed as a fallback for a genuine technique gap, never the default first move.
+Verified the existing pure-technique-question eval case (no concrete artifact) still correctly
+triggers `search_vault` — the fix narrows *when* the lookup tools fire, it doesn't remove them.
+
+**Bug 3: the model correctly tried the directory path from the prompt, got a misleading error,
+and gave up on local files entirely.** With bug 2 fixed, the model's first move was exactly
+right: call `read_local_file` on the path given in the prompt
+(`E:\Github2\CTF_Hackhaton\PICOCHALLENGE\StegoRSA`) — a perfectly reasonable thing to try, since
+the prompt names a directory, not individual filenames. But that path IS a directory, and
+`read_local_file`'s bare `os.path.isfile()` check returned "No such file: ..." — technically
+about a different condition (isfile vs isdir) but indistinguishable in the error text from "this
+location genuinely doesn't exist." The model tried a second path-formatting variant, got the
+same error, and concluded the challenge's files didn't exist at all — falling back to
+`web_search`, finding real public writeups/GitHub repos/YouTube videos of this exact challenge
+(it's apparently a well-known public picoCTF challenge, not custom to this event), and lifting a
+flag from one of them. Confirmed this reproduces the *exact same wrong flag* as the original
+fabrication (`...66388eb3`) — not a coincidence: that suffix is a real flag, just for a
+*different, someone-else's* instance of this challenge, exactly the "these platforms randomize
+the flag per deployment" trap the guardrail already warns about elsewhere, now confirmed via a
+genuinely different failure path reaching the same wrong answer.
+
+**Fixed**: added `agent/tools/_local_file_check.py`'s `check_local_file()`, a shared helper now
+used by all four local-file tools (`read_local_file`, `extract_metadata`, `extract_hidden_key`,
+`rsa_decrypt_file`) that distinguishes "doesn't exist" from "exists but is a directory" — the
+latter now lists the directory's actual contents (`Files/folders here: flag.enc, image.jpg`) so
+the model can immediately retry with a specific file instead of concluding nothing is there.
+
+**Verified fully end-to-end with all three fixes live, against the real challenge directory,
+through the actual agent (not a synthetic fixture, not direct tool calls)**: `read_local_file`
+on the directory correctly listed `flag.enc, image.jpg`; the model then called
+`extract_hidden_key` (`source_path=image.jpg`, `field=comment`, `encoding=hex`) which wrote a
+real `private.pem`, then `rsa_decrypt_file` which reported `pkcs1v15: SUCCESS --
+picoCTF{rs4_k3y_1n_1mg_4eedd678}` — 7 steps, no `web_search`, no fabrication, the correct flag.
+New regression tests for the directory-listing behavior (all four tools) and the priority-order
+system prompt text. Full suite passes (same pre-existing unrelated flakiness aside). Logged in
+`evals/solved_challenges.md`.
 
 ## Models ruled out — don't retry these
 

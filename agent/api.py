@@ -29,12 +29,18 @@ from agent.graph import build_graph, extract_tool_trace, log_run, message_text, 
 
 app = FastAPI(title="CTF Agent API")
 
-# Dev-only CORS: the dashboard runs on Next.js's default dev port. Tighten this
-# (or read from an env var) before deploying either service anywhere but a
-# teammate's laptop.
+# CORS origins default to Next.js's dev port (the local dashboard) but are overridable via the
+# CORS_ORIGINS env var (comma-separated) -- so if the dashboard is served from any other origin on
+# the day (a deployed URL, a different port, a teammate's LAN IP), requests don't silently fail the
+# same-origin check. Unset -> identical to the previous hardcoded localhost:3000 behavior.
+_DEFAULT_CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+_cors_env = os.getenv("CORS_ORIGINS")
+_cors_origins = (
+    [o.strip() for o in _cors_env.split(",") if o.strip()] if _cors_env else _DEFAULT_CORS_ORIGINS
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -53,6 +59,10 @@ class SolveRequest(BaseModel):
     # _pending_approval() and /solve/resume below. Defaults to False, so every existing
     # caller (there are none live yet) is unaffected.
     require_approval: bool = False
+    # Optional per-request flag-format override (comma-separated prefixes, e.g. "hackhaton").
+    # Added to the default flag prefixes for this run's early-exit detection, so the dashboard
+    # can set the real competition format without a server restart. Unset -> module defaults.
+    flag_prefixes: Optional[str] = None
 
 
 class ResumeRequest(BaseModel):
@@ -66,7 +76,12 @@ def get_app_for_provider(provider: str):
     return build_graph(provider)
 
 
-def initial_state(prompt: str, target: Optional[str] = None, require_approval: bool = False) -> dict:
+def initial_state(
+    prompt: str,
+    target: Optional[str] = None,
+    require_approval: bool = False,
+    flag_prefixes: Optional[str] = None,
+) -> dict:
     if target:
         prompt = f"Target: {target}\n\n{prompt}"
     return {
@@ -75,6 +90,7 @@ def initial_state(prompt: str, target: Optional[str] = None, require_approval: b
         "flag": None,
         "category": None,
         "require_approval": require_approval,
+        "flag_prefixes": flag_prefixes,
     }
 
 
@@ -98,7 +114,16 @@ def _completed(result: dict) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "default_provider_key_set": bool(os.getenv("GOOGLE_API_KEY"))}
+    # Check both the single and the plural (rotation) key vars: the team runs on GOOGLE_API_KEYS
+    # (comma-separated) per CLAUDE.md, so checking only GOOGLE_API_KEY would report the key as
+    # unset even when rotation keys are configured -- a misleading pre-demo health check.
+    key_set = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEYS"))
+    return {
+        "status": "ok",
+        # Kept for any dashboard already reading this field; now accurate for either var.
+        "default_provider_key_set": key_set,
+        "google_key_set": key_set,
+    }
 
 
 @app.post("/solve")
@@ -114,7 +139,9 @@ def solve(request: SolveRequest) -> dict:
     thread_id = uuid.uuid4().hex
     try:
         result = graph.invoke(
-            initial_state(request.prompt, request.target, request.require_approval),
+            initial_state(
+                request.prompt, request.target, request.require_approval, request.flag_prefixes
+            ),
             config=run_config(thread_id, provider=request.provider),
         )
     except Exception as exc:  # noqa: BLE001 - surface as a clean 500, not a stack trace to the dashboard
@@ -177,7 +204,9 @@ def solve_stream(request: SolveRequest) -> StreamingResponse:
         final_category = None
         final_steps = 0
         final_flag = None
-        start_state = initial_state(request.prompt, request.target, request.require_approval)
+        start_state = initial_state(
+            request.prompt, request.target, request.require_approval, request.flag_prefixes
+        )
         # Seed with the initial HumanMessage: it's part of the input, not a delta any node
         # emits, so it would never otherwise reach messages_by_id -- and log_run() needs it
         # to record what the run was actually asked to solve.

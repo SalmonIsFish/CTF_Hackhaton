@@ -62,6 +62,13 @@ def fetch_and_join_fragments(
     yourself is unreliable and has produced a wrong answer before (a stray space introduced
     between two otherwise-correct fragments, on more than one attempt).
 
+    To include the root page itself (base_url with no extra path) as one of the fragments, use an
+    EMPTY entry in paths at that position, e.g. paths=",style.css,script.js" for 3 fragments where
+    the first comes from base_url directly -- do not omit it or leave it out expecting it to be
+    implied; an empty entry is meaningful and preserved, not dropped. If you provide `patterns`,
+    it must have exactly one entry per path INCLUDING any empty ones -- count paths by commas, not
+    by how many "real" filenames you wrote.
+
     Provide EITHER pattern (a single regex, capture group `group`, applied to every path in
     turn -- fine when every file wraps its fragment the same way, e.g. r'(?:/\\*|//)\\s*(.*?)\\s*
     (?:\\*/|$)' matches both a CSS/JS block comment and a line comment in one pattern) OR patterns
@@ -92,10 +99,18 @@ def fetch_and_join_fragments(
         return "Provide either pattern or patterns, not both."
     if not pattern and not patterns:
         return "Provide either pattern (one regex for every path) or patterns (one regex per path, newline-separated)."
+    if not paths.strip():
+        return "paths must not be empty."
 
-    paths_list = [p.strip().lstrip("/") for p in paths.split(",") if p.strip()]
-    if not paths_list:
-        return "paths must contain at least one path."
+    # An empty entry between commas (e.g. ",mycss.css,myjs.js") means "the root page itself, no
+    # extra path segment" -- a real, observed confusion otherwise: a model tried exactly that
+    # leading-empty-entry convention expecting 3 paths (root + 2 files), but a plain "if p.strip()"
+    # filter used to silently drop it, shrinking the list to 2 without any signal that happened.
+    # patterns (correctly sized for 3) then failed the length check against the silently-shrunk
+    # list, and nothing about that error pointed at the actual problem (the dropped empty entry),
+    # so repeated retries only ever adjusted regex content, never the real cause. Empty entries are
+    # now preserved and treated as "fetch base_url with no path appended" instead of being dropped.
+    paths_list = [p.strip().lstrip("/") for p in paths.split(",")]
     if len(paths_list) > MAX_PATHS:
         return f"Too many paths (max {MAX_PATHS})."
 
@@ -157,7 +172,7 @@ def fetch_and_join_fragments(
                 "anchor for this file's own comment/wrapper style)."
             )
         fragments.append(fragment)
-        details.append(f"{path}: {fragment!r}")
+        details.append(f"{path or '(base_url root)'}: {fragment!r}")
 
     joined = "".join(fragments)
     host = urlparse(base).hostname or base

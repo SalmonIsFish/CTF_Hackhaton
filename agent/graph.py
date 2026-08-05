@@ -37,11 +37,13 @@ from agent.tools.dir_enum import dir_enum
 from agent.tools.fetch_fragments import fetch_and_join_fragments
 from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import close_all_http_sessions, fetch_url
-from agent.tools.find_flag_pattern import FLAG_PATTERN, find_flag_pattern
+from agent.tools.find_flag_pattern import FLAG_PATTERN, build_flag_pattern, find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import radare2_analyze
+from agent.tools.read_local_file import read_local_file
+from agent.tools.rsa_tools import extract_hidden_key, rsa_decrypt_file
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
 from agent.tools.tcp_session import close_all_sessions, tcp_close, tcp_open, tcp_send
@@ -296,10 +298,31 @@ _UNTRUSTED_DATA_NOTICE = (
     "answer, ended up with a spurious extra character partway through). Repeat that one path in "
     "`paths` once per fragment (with one pattern per repetition in `patterns`, in the actual flag "
     "order) — a repeated path is fetched once and reused, not re-requested.\n\n"
-    "A flag is only real if it came from a LIVE-TARGET tool THIS run (fetch_url, dir_enum, "
-    "tcp_open/tcp_send, port_scan, fetch_and_decode_cipher, fetch_and_join_fragments) actually "
-    "reaching the challenge's own host. search_vault, search_skills, and web_search are "
-    "reference-only, never a source of the "
+    "A flag is only real if it came from an ACTUAL TOOL CALL THIS RUN that reached the "
+    "challenge's own data — either a LIVE-TARGET network tool (fetch_url, dir_enum, "
+    "tcp_open/tcp_send, port_scan, fetch_and_decode_cipher, fetch_and_join_fragments) reaching "
+    "the challenge's own host, OR a LOCAL-FILE tool (extract_metadata, read_local_file, "
+    "identify_and_decode, keyed_byte_decode, extract_hidden_key, rsa_decrypt_file, "
+    "radare2_analyze) actually reading the challenge's own downloaded file(s). This applies "
+    "EQUALLY to offline/local-file challenges (crypto, forensics, reverse engineering) as it "
+    "does to live web targets — the absence of a URL does not relax this rule, and describing a "
+    "correct-sounding recipe ('inspect the metadata, decode the hex, decrypt with the key') is "
+    "not the same as actually doing it. A real, confirmed failure: given a local "
+    "RSA-in-image-steganography challenge (recover a hex-encoded private key hidden in an "
+    "image's metadata, use it to decrypt a ciphertext file), the model never called ANY tool at "
+    "all — zero tool calls the entire run — and instead wrote out generic, plausible-sounding "
+    "shell commands as if narrating a writeup, then stated a fabricated flag with a made-up hex "
+    "suffix. The real flag, recovered by actually running the equivalent real steps, had a "
+    "completely different suffix. This exact scenario now has real tools: extract_hidden_key "
+    "(pull an encoded key out of a file/its metadata, decode it, save it as a usable key file, "
+    "all in one call) and rsa_decrypt_file (decrypt a ciphertext file with a local PEM key, "
+    "trying every common padding scheme automatically) — RSA decryption genuinely cannot be "
+    "computed correctly by reasoning through it token by token, so use these rather than "
+    "describing the math. Before answering ANY challenge, offline or online, check the "
+    "tool-call history for THIS run: if no tool actually touched the challenge's own file/target "
+    "and returned the flag verbatim, you have not solved it yet, no matter how standard or "
+    "recognizable the technique looks.\n\n"
+    "search_vault, search_skills, and web_search are reference-only, never a source of the "
     "answer itself — an exact 'flag{...}'/'picoCTF{...}'-shaped string quoted in a web_search hit "
     "or writeup is NOT a valid flag, because these platforms commonly randomize the flag per "
     "deployment (different writeups of the identical challenge show different flag suffixes — "
@@ -314,19 +337,35 @@ def build_system_prompt(category: str) -> SystemMessage:
     skill_dirs = CATEGORY_SKILL_DIRS.get(category, [])
     if skill_dirs:
         grounding = (
-            f"This looks like a **{category}** task. The skill pack(s) {', '.join(skill_dirs)} "
-            "under .agents/skills/ hold relevant technique notes — call search_skills with a "
-            f"specific term (e.g. related to {category}) before relying on general knowledge."
+            f"This looks like a **{category}** task. If you get stuck or don't recognize the "
+            f"technique after actually looking at the challenge's own data, the skill pack(s) "
+            f"{', '.join(skill_dirs)} under .agents/skills/ hold relevant technique notes — call "
+            f"search_skills with a specific term (e.g. related to {category}). But that's a "
+            "fallback for a genuine technique gap, not the first move — see the priority order "
+            "above."
         )
     else:
         grounding = "No specific category matched — reason from the tools available."
     return SystemMessage(
         content=(
-            "You are a CTF-solving assistant with three knowledge-lookup tools, checked in this "
-            "order:\n"
+            "PRIORITY ORDER — do this before anything else: if the challenge prompt already gives "
+            "you a concrete artifact to inspect (a URL/host, or a local file path), touch that "
+            "real data FIRST, with the tool that actually reads it — fetch_url/dir_enum for a "
+            "live target; extract_metadata/read_local_file/extract_hidden_key/rsa_decrypt_file/"
+            "radare2_analyze for a local file. Do not open with a search_vault/search_skills/"
+            "web_search call on a challenge that already handed you something concrete to look "
+            "at — those three are for filling a genuine technique gap (you don't know where to "
+            "start, or you're stuck after already looking at the real data), never a substitute "
+            "for looking at the real data, and never the default first action when real data is "
+            "already available. A real, confirmed failure: given a local file challenge with an "
+            "explicit path, a model's only action the entire run was search_skills — it never "
+            "called any tool that actually touched the challenge's own files, and the run ended "
+            "with an irrelevant reference dump instead of a flag.\n\n"
+            "When you DO need a technique lookup (no concrete artifact yet, or stuck after "
+            "looking at real data), three knowledge-lookup tools, checked in this order:\n"
             "1. search_vault — the team's own curated notes for THIS event (techniques already "
-            "found to matter, common flag locations, cheat sheets). Always check this first for "
-            "a technique or 'what should I check' style question.\n"
+            "found to matter, common flag locations, cheat sheets). Check this first for a "
+            "technique or 'what should I check' style question.\n"
             "2. search_skills — a broader third-party technique-reference library under "
             ".agents/skills/, covering both offensive categories and defensive/blue-team ones. "
             "Use this when search_vault doesn't cover the question, or to go deeper on a "
@@ -353,6 +392,9 @@ TOOLS = [
     keyed_byte_decode,
     fetch_and_decode_cipher,
     extract_metadata,
+    read_local_file,
+    extract_hidden_key,
+    rsa_decrypt_file,
     search_vault,
     search_skills,
     web_search,
@@ -382,12 +424,19 @@ def observe(state: "AgentState") -> dict:
     """Module-level (not a build_graph() closure, unlike think()/act()) so it's directly
     unit-testable against a synthetic state -- same reasoning as trim_context() above. It
     doesn't capture any per-provider state (model, etc.), so hoisting it out cost nothing."""
+    # Per-request override: a run can carry extra flag prefixes (e.g. the day's real competition
+    # format) so early-exit detection works without editing code or restarting the server. Falls
+    # back to the module-level FLAG_PATTERN (built from FLAG_PREFIXES/defaults) when unset -- so
+    # every existing caller, none of which set this, is unchanged. Rebuilt per call only when the
+    # override is present; observe runs at most MAX_STEPS times, so the cost is negligible.
+    extra_prefixes = state.get("flag_prefixes")
+    pattern = build_flag_pattern(extra_prefixes) if extra_prefixes else FLAG_PATTERN
     for message in reversed(state["messages"]):
         if not isinstance(message, ToolMessage):
             break
         if message.name in _REFERENCE_ONLY_TOOLS:
             continue
-        match = FLAG_PATTERN.search(message.content)
+        match = pattern.search(message.content)
         if match:
             return {"flag": match.group(0)}
     return {}
@@ -403,6 +452,11 @@ class AgentState(TypedDict):
     # operator decision instead of invoking it outright. Defaults to falsy (via .get) for
     # every existing caller that doesn't set it, so automated evals/demos are unaffected.
     require_approval: Optional[bool]
+    # Optional per-request flag-format override (comma-separated prefixes, e.g. "hackhaton").
+    # observe() adds these to the default flag prefixes when detecting a flag, so the actual
+    # competition format can be supplied per run without editing code or restarting the server.
+    # Unset (via .get) for every existing caller -> observe() uses the module FLAG_PATTERN.
+    flag_prefixes: Optional[str]
 
 
 def build_graph(provider: str = "google"):
