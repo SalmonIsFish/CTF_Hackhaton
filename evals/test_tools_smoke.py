@@ -342,6 +342,93 @@ print(refused)
 assert "failed" in refused.lower(), f"expected a clean failure message, got: {refused}"
 
 print(
+    "\n=== fetch_url: HTTP verb tampering -- HEAD/PUT/PATCH/DELETE/OPTIONS all work, not just "
+    "GET/POST -- regression test for picoCTF's 'Get aHead' challenge, where fetch_url's old "
+    "GET/POST-only restriction blocked the actual intended solve: a flag-bearing response header "
+    "that only appears on a HEAD request, never on GET ==="
+)
+
+
+class _VerbTamperingHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"plain GET body, no flag here")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("flag", "picoCTF{h34d_r3v34ls_m0r3_th4n_g3t}")
+        self.end_headers()
+
+    def do_PUT(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"put ok")
+
+    def do_PATCH(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"patch ok")
+
+    def do_DELETE(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"delete ok")
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Allow", "GET, HEAD, PUT, PATCH, DELETE, OPTIONS")
+        self.end_headers()
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+verb_httpd = socketserver.TCPServer(("127.0.0.1", 0), _VerbTamperingHTTPHandler)
+verb_port = verb_httpd.server_address[1]
+verb_thread = threading.Thread(target=verb_httpd.serve_forever, daemon=True)
+verb_thread.start()
+try:
+    get_result = fetch_url.invoke({"url": f"http://127.0.0.1:{verb_port}/"})
+    print(get_result)
+    assert "flag{h34d_r3v34ls" not in get_result.lower(), (
+        f"test setup assumption broken: GET should never see the flag header, got {get_result}"
+    )
+
+    head_result = fetch_url.invoke({"url": f"http://127.0.0.1:{verb_port}/", "method": "HEAD"})
+    print(head_result)
+    assert "picoCTF{h34d_r3v34ls_m0r3_th4n_g3t}" in head_result, (
+        f"expected HEAD to reveal the flag header GET never sends, got {head_result}"
+    )
+    head_flag_state = observe({
+        "messages": [ToolMessage(content=head_result, name="fetch_url", tool_call_id="1")]
+    })
+    assert head_flag_state == {"flag": "picoCTF{h34d_r3v34ls_m0r3_th4n_g3t}"}, (
+        f"expected observe() to detect the flag from a HEAD response header, got {head_flag_state}"
+    )
+
+    for verb, expected in (
+        ("PUT", "put ok"), ("PATCH", "patch ok"), ("DELETE", "delete ok"),
+    ):
+        verb_result = fetch_url.invoke({"url": f"http://127.0.0.1:{verb_port}/", "method": verb})
+        print(verb_result)
+        assert expected in verb_result, f"expected {verb} to reach the server, got {verb_result}"
+
+    options_result = fetch_url.invoke({"url": f"http://127.0.0.1:{verb_port}/", "method": "OPTIONS"})
+    print(options_result)
+    assert "Allow: GET, HEAD, PUT, PATCH, DELETE, OPTIONS" in options_result, (
+        f"expected OPTIONS to reach the server, got {options_result}"
+    )
+
+    print("\n=== fetch_url: a genuinely unsupported method is still rejected cleanly ===")
+    trace_result = fetch_url.invoke({"url": f"http://127.0.0.1:{verb_port}/", "method": "TRACE"})
+    print(trace_result)
+    assert "Unsupported method" in trace_result, f"expected a clean rejection, got {trace_result}"
+finally:
+    verb_httpd.shutdown()
+    verb_httpd.server_close()
+
+print(
     "\n=== fetch_url: quoted header key (real observed model bug, e.g. \"'Content-Type'\") is "
     "sanitized before sending, not sent verbatim ==="
 )

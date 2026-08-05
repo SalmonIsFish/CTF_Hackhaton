@@ -134,8 +134,15 @@ def fetch_url(
     session_id: Optional[str] = None,
 ) -> str:
     """Make a single HTTP request to a URL and return the status line, response headers, and a
-    truncated response body. method is GET or POST; body is an optional request body for POST;
-    headers is an optional dict of request headers (e.g. {"Content-Type": "application/json"} —
+    truncated response body. method is GET, POST, PUT, PATCH, DELETE, HEAD, or OPTIONS -- don't
+    assume a challenge only exercises GET/POST; HTTP verb tampering (a response only reveals a
+    flag-bearing header or a different body under a specific, less obvious method) is a real,
+    confirmed picoCTF challenge shape (e.g. "Get aHead": GET's response has no flag, but HEAD's
+    response headers include one, `flag: picoCTF{...}`, that GET's headers never send at all --
+    try HEAD/OPTIONS/PUT/PATCH/DELETE, not just GET/POST, when a challenge's own hints point at
+    "more choices" than the two obvious methods or explicitly mention inspecting methods/headers
+    with a proxy tool). body is an optional request body for POST/PUT/PATCH; headers is an
+    optional dict of request headers (e.g. {"Content-Type": "application/json"} —
     required for POSTing a JSON body to APIs that only parse the body when that header is set,
     a common Express/express.json() pattern). Header keys must use literal hyphens exactly as
     real HTTP header names do (e.g. "X-Forwarded-For", "Content-Type") — do NOT substitute
@@ -173,8 +180,8 @@ def fetch_url(
     server-side and get back only the matching snippet(s) with context, without needing the whole
     body in your own context window. search_pattern and session_id can be combined."""
     method = method.upper()
-    if method not in {"GET", "POST"}:
-        return f"Unsupported method '{method}'; use GET or POST."
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        return f"Unsupported method '{method}'; use GET, POST, PUT, PATCH, DELETE, HEAD, or OPTIONS."
 
     clean_headers = repair_headers(headers) if headers else None
 

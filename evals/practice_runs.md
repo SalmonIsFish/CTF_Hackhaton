@@ -818,6 +818,44 @@ Confirms both fixes, not just the direct/local-fixture verification above: the a
 `patterns` argument correctly and reached `picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` on its
 own. Logged in `evals/solved_challenges.md`.
 
+## Real picoCTF target — "Get aHead" (Web Exploitation) — fetch_url's GET/POST-only restriction blocked the actual intended solve technique
+
+Target `wily-courier.picoctf.net:65237`. Challenge hints point directly at HTTP verb tampering:
+"maybe you have more than 2 choices" (i.e. more than GET/POST) and "check out tools like
+Burpsuite to modify your requests and look at the responses." The agent correctly inferred the
+technique and tried `PUT`, `PATCH`, and finally `HEAD` — the actual solve — but every one of
+those calls failed immediately with `Unsupported method 'X'; use GET or POST.`: `fetch_url` had a
+hardcoded `{"GET", "POST"}` allowlist, blocking the entire technique category before any of those
+calls could even reach the target.
+
+**Root cause confirmed by direct reproduction**: `curl -I` (HEAD) against the real target returns
+a `flag:` response header (`picoCTF{r3j3ct_th3_du4l1ty_8b13f07}`) that a plain GET's response
+never includes at all — `GET`'s own headers were checked directly and confirmed to have no such
+header. This is a genuine, deliberate challenge mechanic (the page is themed "Red"/"Blue" with a
+GET-vs-POST form choice, and the real answer is neither — a third option, HEAD, reveals what
+picking either visible option hides), not a bug in the challenge; the bug was entirely in the
+tool's artificially narrow method allowlist.
+
+**Fix**: `agent/tools/fetch_url.py` now supports the standard HTTP verb set
+(`GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS`) instead of just `GET`/`POST`. No other tool
+code needed to change — `requests.request()` already handles every method generically; the
+restriction was purely a self-imposed validation guard. Docstring updated to explicitly mention
+HTTP verb tampering as a real challenge category (naming this exact case) so the model reaches
+for non-GET/POST methods proactively rather than only after being blocked. Verified directly
+against the live target: `fetch_url` with `method="HEAD"` now returns the flag cleanly, and
+`observe()` correctly detects it from the response header. New regression tests in
+`evals/test_tools_smoke.py` cover all five newly-supported methods plus confirming a genuinely
+unsupported method (`TRACE`) is still cleanly rejected. Full suite passes.
+
+**Re-run through the actual agent, post-fix (fresh instance, `:57923`) — solved end-to-end in 2
+steps (`GET` then `HEAD`), no human intervention, no `web_search` call anywhere in the trace.**
+By the time this was double-checked, the instance had already been torn down, so it couldn't be
+re-verified directly against that exact instance -- but the flag value
+(`picoCTF{r3j3ct_th3_du4l1ty_8b13f07}`) exactly matches the one independently curled from the
+earlier, separate `:65237` instance, meaning this challenge's flag is static/non-randomized
+rather than per-instance -- a real, meaningful corroboration, not coincidence. Logged in
+`evals/solved_challenges.md`.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`
