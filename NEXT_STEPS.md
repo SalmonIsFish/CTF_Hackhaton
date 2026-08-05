@@ -197,11 +197,15 @@ from what's already been demonstrated or built, revisable the moment real inform
   already span Web/Crypto/Pwn/Reverse/Forensics/Malware/OSINT/Misc/AI-ML — broad enough that
   not knowing the exact 2–3 categories in advance isn't a real blocker. Rashid's Phase 3 task
   to narrow this down is nice-to-have, not required.
-- [ ] **Presentation vs. flag-only scoring — working assumption: both.** The brief's heavy
-  emphasis on the "9 Harness Elements" (safety, observability, sub-agents, etc.), not just flag
-  count, suggests the architecture/demo itself is judged alongside raw flags. Acting on this:
-  keep `demo/` rehearsal-ready (Phase 4's "actual rehearsed screen recording" item), don't
-  optimize purely for flag count at the expense of a coherent demo story.
+- [x] **Presentation vs. flag-only scoring — RESOLVED: flag-only.** Confirmed by the user
+  2026-08-05: the competition (2026-08-06) is scored on captured flags only — you just submit the
+  flag, there is no demo/recording/presentation component. This supersedes the earlier "assume
+  both" hedge. Acting on this: **optimize purely for flag capture.** The rehearsed-screen-recording
+  item under Phase 4 is now moot (scratch it — see that item, updated). Prioritize agent hardening
+  via practice runs on the likely categories (Web confirmed; Crypto/Forensics assumed), bug fixes,
+  vault notes, and quota discipline. The configurable flag format (`FLAG_PREFIXES` env / per-request
+  `flag_prefixes`, added 2026-08-05) is directly the win condition — set the real format the moment
+  it's known on the day.
 - [ ] **Team-role rules / submission format — accepted as genuinely unknowable, and genuinely
   low-risk.** Nothing in the current build depends on a specific submission mechanism — the
   dashboard surfaces the flag string directly (`final_state["flag"]`) for a human to submit
@@ -266,9 +270,9 @@ Rashid's items remain genuinely open.
   from Gemini; falls back to the single `GOOGLE_API_KEY` if unset, so nobody's `.env` needed
   to change. Verified with stubbed models in `evals/test_model_router_smoke.py` (no real quota
   exhaustion needed to test the logic).
-- [ ] An actual rehearsed screen recording of the demo — ideally showing a real network
-  solve once Phase 1 lands, not just the synthetic local-server one.
-  `demo/expected_transcript.txt` is a text placeholder, not a substitute.
+- [~] ~~An actual rehearsed screen recording of the demo~~ — **moot: scoring is flag-only, no
+  presentation** (see Phase 2, resolved 2026-08-05). No recording is needed. `demo/` stays useful
+  only as a quick offline regression check that the loop still works, not as a demo artifact.
 - [x] ~~`web_search` tool (Tavily-backed)~~ — done. `agent/tools/web_search.py`, wired into
   `TOOLS` and the `search_vault → search_skills → web_search` grounding order in
   `build_system_prompt()`. Motivated by real friction solving Desires: the agent had no way to
