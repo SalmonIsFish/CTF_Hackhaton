@@ -1175,3 +1175,68 @@ try:
 finally:
     scavenger_httpd.shutdown()
     scavenger_httpd.server_close()
+
+print(
+    "\n=== fetch_and_join_fragments: repeating the SAME path extracts multiple fragments from "
+    "ONE page (not separate files) -- regression test for picoCTF's 'dont-use-client-side' "
+    "challenge, where a client-side JS verify() checks 8 separate substrings of one password "
+    "field; the agent correctly identified every fragment but hand-typing all 8 out in its final "
+    "answer introduced a spurious extra character partway through. Also confirms a repeated path "
+    "is fetched once and reused, not re-requested per repetition ==="
+)
+_fetch_count = {"n": 0}
+
+
+class _ClientSideHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        _fetch_count["n"] += 1
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write((
+            "function verify() {\n"
+            "  if (checkpass.substring(0, split) == 'pico') {\n"
+            "    if (checkpass.substring(split*6, split*7) == 'eb02') {\n"
+            "      if (checkpass.substring(split, split*2) == 'CTF{') {\n"
+            "        if (checkpass.substring(split*4, split*5) == 'ts_p') {\n"
+            "          if (checkpass.substring(split*3, split*4) == 'lien') {\n"
+            "            if (checkpass.substring(split*5, split*6) == 'lz_2') {\n"
+            "              if (checkpass.substring(split*2, split*3) == 'no_c') {\n"
+            "                if (checkpass.substring(split*7, split*8) == 'b45}') {}}}}}}}}}\n"
+        ).encode())
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+clientside_httpd = socketserver.TCPServer(("127.0.0.1", 0), _ClientSideHTTPHandler)
+clientside_port = clientside_httpd.server_address[1]
+clientside_thread = threading.Thread(target=clientside_httpd.serve_forever, daemon=True)
+clientside_thread.start()
+try:
+    ordered_patterns = "\n".join([
+        r"substring\(0, split\) == '([^']*)'",
+        r"substring\(split, split\*2\) == '([^']*)'",
+        r"substring\(split\*2, split\*3\) == '([^']*)'",
+        r"substring\(split\*3, split\*4\) == '([^']*)'",
+        r"substring\(split\*4, split\*5\) == '([^']*)'",
+        r"substring\(split\*5, split\*6\) == '([^']*)'",
+        r"substring\(split\*6, split\*7\) == '([^']*)'",
+        r"substring\(split\*7, split\*8\) == '([^']*)'",
+    ])
+    clientside_result = fetch_and_join_fragments.invoke({
+        "base_url": f"http://127.0.0.1:{clientside_port}",
+        "paths": ",".join(["index.html"] * 8),
+        "patterns": ordered_patterns,
+        "group": 1,
+    })
+    print(clientside_result)
+    assert "picoCTF{no_clients_plz_2eb02b45}" in clientside_result, (
+        f"expected the correctly-ordered 8-fragment flag from a single page, got {clientside_result}"
+    )
+    assert _fetch_count["n"] == 1, (
+        f"expected the repeated path to be fetched exactly once and reused, got "
+        f"{_fetch_count['n']} real HTTP requests"
+    )
+finally:
+    clientside_httpd.shutdown()
+    clientside_httpd.server_close()

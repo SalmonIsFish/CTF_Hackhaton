@@ -856,6 +856,38 @@ earlier, separate `:65237` instance, meaning this challenge's flag is static/non
 rather than per-instance -- a real, meaningful corroboration, not coincidence. Logged in
 `evals/solved_challenges.md`.
 
+## Real picoCTF target — "dont-use-client-side" (Web Exploitation) — a third variant of the manual-reassembly bug, this time within a single page instead of across files
+
+Target `fickle-tempest.picoctf.net:55175`, hint "Never trust the client." The page ships a
+client-side JS `verify()` function checking 8 separate substrings of a password field (e.g.
+`checkpass.substring(0, split) == 'pico'`, `checkpass.substring(split*6, split*7) == 'eb02'`,
+...), each comparison revealing one eighth of the flag directly in the page source — no exploit
+needed beyond reading it. The agent correctly identified all 8 individual fragment values (`pico`,
+`CTF{`, `no_c`, `lien`, `ts_p`, `lz_2`, `eb02`, `b45}`) exactly matching the real page, but
+hand-typing them out in order in its final answer produced
+`picoCTF{no_clients_plzl_2eb02b45}` — a spurious extra `l` inserted between `plz` and `_2`. The
+real, correct flag (confirmed both by direct reproduction and by the tool below):
+`picoCTF{no_clients_plz_2eb02b45}`.
+
+This is the same manual-reassembly failure class as "Includes" and "Scavenger Hunt", just in a
+new shape: all 8 fragments live on a SINGLE page (extracted via distinct substring-index checks),
+not split across separate files, so `fetch_and_join_fragments`'s `paths` list (designed for
+multiple URLs) didn't obviously apply. It actually already worked for this case with zero code
+changes — repeating the same path 8 times with 8 different `patterns` entries fetches and joins
+correctly — but doing that literally would issue 8 redundant HTTP requests for the identical
+page. Added a small optimization: `fetch_and_join_fragments` now caches each fetched response by
+URL, so a repeated path is only actually requested once and its body reused for every fragment
+pattern matched against it. Docstring and `_UNTRUSTED_DATA_NOTICE` both updated to name this
+pattern explicitly (single page, many substring fragments) as a case to reach for the tool on,
+not just the multi-file case. Verified directly against the live target: correct flag, and a
+regression test confirms the repeated-path case makes exactly one real HTTP request, not 8. Full
+suite passes.
+
+**Re-run through the actual agent, post-fix — solved end-to-end, no human intervention and no
+extra character.** Confirms the fix, not just the direct verification above: the agent used
+`fetch_and_join_fragments` with the repeated-path pattern and reached
+`picoCTF{no_clients_plz_2eb02b45}` on its own. Logged in `evals/solved_challenges.md`.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

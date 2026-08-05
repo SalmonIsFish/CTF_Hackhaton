@@ -22,6 +22,17 @@ the match ran to the end of that file's entire body instead of stopping at the r
 because the *next* '}' anywhere was in a completely different file's response. `patterns` (plural,
 one regex per path) exists so each file's own wrapper can be matched precisely instead of forcing
 one pattern to (mis)handle every style at once.
+
+A third failure mode (picoCTF's "dont-use-client-side"/"Never trust the client") showed the split
+doesn't always come from multiple files at all -- sometimes ALL the fragments live in ONE page,
+as separate substring/index checks in some client-side JS (e.g. checkpass.substring(0,4)=='pico',
+checkpass.substring(24,28)=='eb02', ...). The model correctly identified every individual
+fragment from the real page, but hand-typing all 8 of them out in order in its own final answer
+introduced a spurious extra character partway through -- the same manual-reassembly failure class
+as the two bugs above, just with more fragments and no separate URLs to point a `paths` list at.
+Repeating the SAME path in `paths` (once per fragment, with a distinct entry in `patterns` for
+each) handles this correctly with the existing interface -- and the response for each repeated
+path is fetched only once and reused, not re-requested per repetition.
 """
 import re
 from typing import Optional
@@ -65,6 +76,15 @@ def fetch_and_join_fragments(
     producing a garbled result -- write a pattern with a real closing anchor specific to that
     file's own wrapper (e.g. end the HTML case at '-->', not at a '}' that isn't there).
 
+    If every fragment actually lives on ONE page (e.g. several separate substring/index checks in
+    some client-side JS, not separate files), repeat that same path once per fragment in `paths`
+    (e.g. "index.html,index.html,index.html") and give each repetition its own capturing pattern
+    in `patterns`, in the FINAL flag order (not necessarily the order the checks appear in the
+    page's own source, which is often deliberately shuffled) -- do not read the fragments off the
+    page and retype them yourself, the same manual-reassembly mistake that motivated this tool in
+    the first place has happened with many fragments from one page too. A repeated path is only
+    actually fetched once and the response reused for each of its patterns, not re-requested.
+
     Never raises -- a fetch failure or unmatched pattern on any path aborts immediately and
     reports which path failed and how many fragments were already found, rather than silently
     joining a partial or wrong set."""
@@ -99,16 +119,24 @@ def fetch_and_join_fragments(
     base = base_url.rstrip("/")
     fragments = []
     details = []
+    # Keyed by url, not path, so a repeated path (the "all fragments on one page" case -- see
+    # module docstring) is fetched once and its body reused, rather than re-requesting the same
+    # page once per fragment.
+    body_cache: dict = {}
     for path, compiled in zip(paths_list, compiled_list):
         url = f"{base}/{path}"
-        try:
-            response = requests.get(url, timeout=FETCH_TIMEOUT_SECONDS)
-        except requests.RequestException as exc:
-            return (
-                f"Request to {url} failed: {exc} (aborted after {len(fragments)} of "
-                f"{len(paths_list)} fragments)"
-            )
-        body = decode_response_body(response)
+        if url in body_cache:
+            body = body_cache[url]
+        else:
+            try:
+                response = requests.get(url, timeout=FETCH_TIMEOUT_SECONDS)
+            except requests.RequestException as exc:
+                return (
+                    f"Request to {url} failed: {exc} (aborted after {len(fragments)} of "
+                    f"{len(paths_list)} fragments)"
+                )
+            body = decode_response_body(response)
+            body_cache[url] = body
         match = compiled.search(body)
         if not match:
             return (
