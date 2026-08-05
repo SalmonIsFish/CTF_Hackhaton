@@ -17,6 +17,7 @@ from agent.graph import (
 from agent.tools import fetch_url as fetch_url_module
 from agent.tools import tcp_session
 from agent.tools.dir_enum import dir_enum
+from agent.tools.fetch_fragments import fetch_and_join_fragments
 from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import fetch_url
 from agent.tools.find_flag_pattern import find_flag_pattern
@@ -226,6 +227,12 @@ assert "target is unreachable" in guardrail_prompt, (
     "expected an explicit instruction to report an unreachable target instead of substituting "
     "a flag found via web_search"
 )
+assert "1of2" in guardrail_prompt and "stray space" in guardrail_prompt, (
+    "expected explicit guidance on precisely concatenating a multi-part flag (regression test "
+    "-- confirmed live against picoCTF's 'Includes' challenge: two genuine flag fragments, each "
+    "read correctly from its own tool result, were joined with an extra space introduced by "
+    "hand, producing a flag that reads as wrong despite every individual piece being real)"
+)
 
 print("\n=== extract_tool_trace: pairs an AIMessage's tool call with its ToolMessage result ===")
 trace_messages = [
@@ -389,6 +396,62 @@ try:
 finally:
     header_echo_httpd.shutdown()
     header_echo_httpd.server_close()
+
+print(
+    "\n=== fetch_url: no-separator/camelCase header key (real observed model bug: "
+    "\"contentType\" instead of \"Content-Type\") is canonicalized, not sent verbatim -- "
+    "regression test for a run where this silently broke every POST across a whole picoCTF "
+    "challenge (PHP's $_POST never populated, no error surfaced -- see practice_runs.md's "
+    "'Local Authority' write-up). Uses its own local server rather than reusing "
+    "header_echo_httpd above: piling many sequential requests onto one single-threaded "
+    "socketserver.TCPServer has been flaky on Windows (WinError 10053, connection aborted) ==="
+)
+
+
+class _CamelCaseHeaderEchoHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(self.headers.get("Content-Type", "MISSING").encode())
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+camel_header_httpd = socketserver.TCPServer(("127.0.0.1", 0), _CamelCaseHeaderEchoHTTPHandler)
+camel_header_port = camel_header_httpd.server_address[1]
+camel_header_thread = threading.Thread(target=camel_header_httpd.serve_forever, daemon=True)
+camel_header_thread.start()
+try:
+    camel_case_header_result = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{camel_header_port}/",
+        "method": "POST",
+        "body": "a=1",
+        "headers": {"contentType": "application/x-www-form-urlencoded"},
+    })
+    print(camel_case_header_result)
+    assert "application/x-www-form-urlencoded" in camel_case_header_result, (
+        f"expected the canonicalized Content-Type header to reach the server, got {camel_case_header_result}"
+    )
+    assert "MISSING" not in camel_case_header_result, (
+        f"expected the camelCase key to still be recognized as Content-Type, got {camel_case_header_result}"
+    )
+
+    print("\n=== fetch_url: a genuinely custom header key is left untouched, not guessed at ===")
+    custom_header_result = fetch_url.invoke({
+        "url": f"http://127.0.0.1:{camel_header_port}/",
+        "method": "POST",
+        "body": "a=1",
+        "headers": {"X-My-Custom-Flag-Header": "application/x-www-form-urlencoded"},
+    })
+    print(custom_header_result)
+    assert "MISSING" in custom_header_result, (
+        f"expected a custom header (not Content-Type) to be left alone, not guessed into "
+        f"Content-Type, got {custom_header_result}"
+    )
+finally:
+    camel_header_httpd.shutdown()
+    camel_header_httpd.server_close()
 
 print(
     "\n=== fetch_url: search_pattern reaches a flag buried well past MAX_BODY_CHARS (8 KB) -- "
@@ -799,3 +862,186 @@ print("\n=== dir_enum: unreachable target, expect a clean error string, not an e
 dir_enum_refused = dir_enum.invoke({"base_url": "http://127.0.0.1:1"})
 print(dir_enum_refused)
 assert "failed" in dir_enum_refused.lower(), f"expected a clean failure message, got: {dir_enum_refused}"
+
+print(
+    "\n=== fetch_and_join_fragments: joins two comment-hidden fragments with no stray "
+    "separator -- regression test for picoCTF's 'Includes' challenge, where the model correctly "
+    "read both real fragments but introduced a space joining them by hand, on more than one "
+    "attempt even after a prompt-only guardrail was added ==="
+)
+
+
+class _IncludesHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        if self.path == "/style.css":
+            body = b"body { background-color: lightblue; }\n\n/*  picoCTF{1nclu51v17y_1of2_  */"
+        elif self.path == "/script.js":
+            body = b"function greetings() { alert('hi'); }\n\n//  f7w_2of2_df589022}"
+        else:
+            body = b""
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+includes_httpd = socketserver.TCPServer(("127.0.0.1", 0), _IncludesHTTPHandler)
+includes_port = includes_httpd.server_address[1]
+includes_thread = threading.Thread(target=includes_httpd.serve_forever, daemon=True)
+includes_thread.start()
+try:
+    fragments_result = fetch_and_join_fragments.invoke({
+        "base_url": f"http://127.0.0.1:{includes_port}",
+        "paths": "style.css,script.js",
+        "pattern": r"(?:/\*|//)\s*(.*?)\s*(?:\*/|$)",
+    })
+    print(fragments_result)
+    assert "<untrusted_data" in fragments_result, "expected untrusted_data wrapper"
+    assert "picoCTF{1nclu51v17y_1of2_f7w_2of2_df589022}" in fragments_result, (
+        f"expected the two fragments joined with no separator, got {fragments_result}"
+    )
+    assert "1of2_ f7w" not in fragments_result, (
+        f"expected no stray space between the two fragments, got {fragments_result}"
+    )
+
+    print("\n=== fetch_and_join_fragments: an unmatched pattern on a later path aborts cleanly ===")
+    partial_result = fetch_and_join_fragments.invoke({
+        "base_url": f"http://127.0.0.1:{includes_port}",
+        "paths": "style.css,does-not-exist.js",
+        "pattern": r"(?:/\*|//)\s*(.*?)\s*(?:\*/|$)",
+    })
+    print(partial_result)
+    assert "did not match" in partial_result, f"expected a clean no-match message, got {partial_result}"
+    assert "1 of 2" in partial_result, (
+        f"expected the abort message to report how many fragments were found first, got {partial_result}"
+    )
+
+    print(
+        "\n=== fetch_and_join_fragments + observe(): the correctly-joined flag is what gets "
+        "detected, not a garbled span from the fragments debug listing -- regression test for a "
+        "real bug: the first fragment of a split flag naturally starts with 'picoCTF{' (it's the "
+        "first chunk of the real flag), and when the debug listing was printed before the "
+        "'Joined:' line, FLAG_PATTERN's left-to-right regex search matched from that accidental "
+        "'picoCTF{' all the way to the next stray '}' -- landing inside a LATER fragment's own "
+        "repr -- producing a completely wrong 'flag' built out of debug text. Confirmed live "
+        "against picoCTF's 'Scavenger Hunt' challenge (5 fragments); 'Joined: ...' now comes "
+        "first in the payload specifically so the real answer wins the search ==="
+    )
+    scavenger_result = fetch_and_join_fragments.invoke({
+        "base_url": f"http://127.0.0.1:{includes_port}",
+        "paths": "style.css,script.js",
+        "pattern": r"(?:/\*|//)\s*(.*?)\s*(?:\*/|$)",
+    })
+    scavenger_flag_state = observe({
+        "messages": [
+            ToolMessage(content=scavenger_result, name="fetch_and_join_fragments", tool_call_id="1")
+        ]
+    })
+    print(scavenger_flag_state)
+    assert scavenger_flag_state == {"flag": "picoCTF{1nclu51v17y_1of2_f7w_2of2_df589022}"}, (
+        f"expected observe() to detect exactly the correctly-joined flag, not a garbled span "
+        f"pulled from the debug listing, got {scavenger_flag_state}"
+    )
+finally:
+    includes_httpd.shutdown()
+    includes_httpd.server_close()
+
+print(
+    "\n=== fetch_and_join_fragments: per-path `patterns` handles genuinely different comment "
+    "styles per file -- regression test for picoCTF's 'Scavenger Hunt' challenge (5 files: an "
+    "HTML comment with no '}' in it at all, a CSS block comment, two '#' line comments, and a "
+    "plain-text file with no comment delimiter). A single shared `pattern` relying on '}' as a "
+    "stop condition ran past the HTML file's real fragment to the end of that file's entire "
+    "body, since the next '}' was in a completely different file's response ==="
+)
+
+
+class _ScavengerHTTPHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        bodies = {
+            "/index.html": (
+                b"<html><body><p>stuff</p>\n"
+                b"\t<!-- Here's the first part of the flag: picoCTF{t -->\n"
+                b"      </div>\n\n    </div>\n\n  </body>\n</html>"
+            ),
+            "/mycss.css": b"body { color: red; }\n\n/* Here's part 2: h4ts_4_l0 */",
+            "/robots.txt": b"User-agent: *\nDisallow: /\n# Part 3: t_0f_pl4c\n",
+            "/.htaccess": b"# Part 4: 3s_2_lO0k\n",
+            "/.DS_Store": b"Congrats! Part 5: _9588550}",
+        }
+        self.wfile.write(bodies.get(self.path, b""))
+
+    def log_message(self, format, *args):  # noqa: A002 - silence default request logging
+        pass
+
+
+scavenger_httpd = socketserver.TCPServer(("127.0.0.1", 0), _ScavengerHTTPHandler)
+scavenger_port = scavenger_httpd.server_address[1]
+scavenger_thread = threading.Thread(target=scavenger_httpd.serve_forever, daemon=True)
+scavenger_thread.start()
+try:
+    per_path_patterns = "\n".join([
+        r"flag:\s*(\S+)\s*-->",
+        r"part 2:\s*(\S+?)\s*\*/",
+        r"# Part 3:\s*(\S+)",
+        r"# Part 4:\s*(\S+)",
+        r"Part 5:\s*(\S+)",
+    ])
+    scavenger_paths = "index.html,mycss.css,robots.txt,.htaccess,.DS_Store"
+    scavenger_base = f"http://127.0.0.1:{scavenger_port}"
+
+    multi_pattern_result = fetch_and_join_fragments.invoke({
+        "base_url": scavenger_base, "paths": scavenger_paths,
+        "patterns": per_path_patterns, "group": 1,
+    })
+    print(multi_pattern_result)
+    assert "picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}" in multi_pattern_result, (
+        f"expected the correctly-joined flag using per-path patterns, got {multi_pattern_result}"
+    )
+    multi_pattern_flag_state = observe({
+        "messages": [
+            ToolMessage(content=multi_pattern_result, name="fetch_and_join_fragments", tool_call_id="1")
+        ]
+    })
+    assert multi_pattern_flag_state == {"flag": "picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}"}, (
+        f"expected observe() to detect the correct 5-fragment flag, got {multi_pattern_flag_state}"
+    )
+
+    print(
+        "\n=== fetch_and_join_fragments: a single shared pattern that isn't bounded per-file "
+        "reproduces the real over-match bug (regression, confirming why patterns exists) ==="
+    )
+    single_pattern_result = fetch_and_join_fragments.invoke({
+        "base_url": scavenger_base, "paths": scavenger_paths,
+        "pattern": r"(picoCTF\{[^}]*|h4ts_4_l0|t_0f_pl4c|3s_2_lO0k|_9588550\})",
+        "group": 1,
+    })
+    print(single_pattern_result)
+    assert "</html>" in single_pattern_result, (
+        "expected the known over-match failure to reproduce with an unbounded shared pattern "
+        f"(sanity-checking the bug this feature fixes is real), got {single_pattern_result}"
+    )
+
+    print("\n=== fetch_and_join_fragments: patterns/pattern validation errors are clean, not exceptions ===")
+    both_given = fetch_and_join_fragments.invoke({
+        "base_url": scavenger_base, "paths": "a,b", "pattern": r"(.+)", "patterns": "(.+)\n(.+)",
+    })
+    print(both_given)
+    assert "either pattern or patterns, not both" in both_given
+
+    neither_given = fetch_and_join_fragments.invoke({"base_url": scavenger_base, "paths": "a,b"})
+    print(neither_given)
+    assert "Provide either pattern" in neither_given
+
+    count_mismatch = fetch_and_join_fragments.invoke({
+        "base_url": scavenger_base, "paths": "a,b,c", "patterns": "(.+)\n(.+)",
+    })
+    print(count_mismatch)
+    assert "must match 1:1" in count_mismatch, f"expected a clean count-mismatch message, got {count_mismatch}"
+finally:
+    scavenger_httpd.shutdown()
+    scavenger_httpd.server_close()

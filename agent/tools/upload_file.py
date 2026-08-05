@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import requests
 from langchain_core.tools import tool
 
+from agent.tools._header_repair import repair_headers
 from agent.tools._response_text import decode_response_body
 
 TIMEOUT_SECONDS = 8.0
@@ -34,12 +35,14 @@ def upload_file(
     except Exception as exc:
         return f"content_b64 is not valid base64: {exc}"
 
+    clean_headers = repair_headers(headers) if headers else None
+
     try:
         response = requests.post(
             url,
             files={field_name: (filename, content)},
             data=extra_fields or {},
-            headers=headers,
+            headers=clean_headers,
             timeout=TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:

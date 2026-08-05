@@ -621,10 +621,202 @@ all three tools. Re-verified directly against the same live instance post-fix:
 flag, confirmed matching the earlier independently-verified value:
 `picoCTF{p@g3_turn3r_cebccdfe}`. Full `evals/test_tools_smoke.py` suite still passes.
 
-**Still not done**: re-run this through the actual agent end-to-end (last attempt used the old,
-buggy tool code) to confirm it now reaches the correct flag on its own rather than falling back
-to `web_search`/further hand-computation the way it did when `fetch_and_decode_cipher` returned
-garbage. Log that outcome here once it happens.
+**Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.** The
+agent reached `picoCTF{p@g3_turn3r_cebccdfe}` on its own this time — no fallback to `web_search`
+or hand-computation, and no fabrication. Confirms all three fixes (the new
+`fetch_and_decode_cipher` tool, the dashboard `data-flag` verification, and the UTF-8 encoding
+fix) together, not just the direct reproduction above. Logged in `evals/solved_challenges.md`.
+
+## Real picoCTF target — "Local Authority" (Web Exploitation) — agent found the right exploit on its first real attempt, but a header-mangling bug silently broke every POST in the entire run
+
+**Not a solve yet by the agent — but the root cause is now identified, fixed, and independently
+confirmed correct against the live target.** Target `saturn.picoctf.net:52950`: a login page
+whose auth check runs entirely client-side in `secure.js`
+(`username === 'admin' && password === 'strongPassword098765'`), and on success, `login.php`'s
+own HTML sets a **hardcoded** hidden-form value (`hash=2196812e91c29df34f5e217cfd639881`) and
+auto-submits it to `admin.php`. Since that hash is static and visible in the page source for any
+request, the actual intended solve is to skip the login step entirely and POST that hash straight
+to `/admin.php`.
+
+**The agent found and tried exactly that technique on its second real POST** (after one login
+attempt) — `POST /admin.php` with `body: "hash=2196812e91c29df34f5e217cfd639881"`. It should
+have worked immediately. It didn't, and neither did any of the 10+ following attempts (a cookie
+guess, a proper session_id-based login+admin.php sequence, repeated dir_enum/secure.js re-fetches)
+— the run burned all 15 steps and ended with `flag: None`.
+
+**Root cause, confirmed by direct reproduction**: every single `headers` dict the model sent
+across the entire run used `{"contentType": "application/x-www-form-urlencoded"}` — camelCase,
+no separator at all — instead of `{"Content-Type": ...}`. PHP's `$_POST` superglobal only
+populates when the request actually carries a recognized `Content-Type: application/
+x-www-form-urlencoded` (or multipart) header; with the mangled key, the server never parsed a
+body at all, so `$_POST['hash']`/`$_POST['username']`/`$_POST['password']` were always empty —
+every POST in the run returned an ordinary 200 OK "failed" page, with no error to react to.
+Confirmed directly: replaying the agent's exact `POST /admin.php` call with `fetch_url` using the
+project's own (pre-fix) header handling reproduced the same failure; replaying it again with the
+fix in place returned the real flag on the first try.
+
+This is the same underlying bug class already partially addressed once before (an
+underscore-for-hyphen variant, `X_Forwarded_For`, fixed via a docstring warning only — see
+`CLAUDE.md`'s 2026-08-04 session note) — but a docstring warning didn't stop a *new* mangled form
+(camelCase/no-separator) from recurring, and this time it silently broke 100% of the POSTs in an
+entire run rather than one call. Fixed at the code level instead of relying on prompting further:
+added `agent/tools/_header_repair.py`, a shared `repair_headers()` used by both `fetch_url` and
+`upload_file` (which had never sanitized headers before), that canonicalizes a header key against
+a list of common header names by comparing a "squashed" (lowercased, non-alphanumeric-stripped)
+form — so `contentType`, `content_type`, `Content Type`, and `Content-Type` all normalize to the
+same real header, regardless of which separator style a model invents next, while a genuinely
+custom header (no match in the known list) is left untouched since its exact spelling can't be
+safely guessed.
+
+**Verified directly against the live instance**: replaying the agent's exact failed
+`POST /admin.php` call with the fix in place returns
+`picoCTF{j5_15_7r4n5p4r3n7_b0c2c9cb}` immediately. Full `evals/test_tools_smoke.py` suite passes
+(new regression tests added for the camelCase form and for a genuine custom header being left
+alone).
+
+**Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.**
+Confirms the fix, not just the direct reproduction above: the agent reached
+`picoCTF{j5_15_7r4n5p4r3n7_b0c2c9cb}` on its own. Logged in `evals/solved_challenges.md`.
+Bookmarklet (same session, different fix) was also re-run and solved end-to-end shortly after —
+see that section above, updated in place.
+
+(Aside, unrelated to the fix: `evals/test_tools_smoke.py`'s local-HTTP-server test blocks have
+shown intermittent `WinError 10053` connection-aborted flakiness on this Windows machine when a
+block issues several sequential requests to the same single-threaded `socketserver.TCPServer` --
+pre-existing, not caused by this session's changes, and not chased down here since re-running
+past the flake reliably reproduces a clean pass. Worth switching those to
+`socketserver.ThreadingTCPServer` at some point if it keeps happening.)
+
+## Real picoCTF target — "Inspect HTML" (Web Exploitation, Easy) — flag captured in a single step
+
+Target `saturn.picoctf.net:62526`. One `fetch_url` GET on the root page, no other tool calls
+needed: the flag sat verbatim in an HTML comment (`<!--picoCTF{1n5p3t0r_0f_h7ml_8113f7e2}-->`)
+right in the page source, exactly what the challenge's name/hint ("what is the web inspector")
+points at. No bugs hit, no human intervention. Confirms the agent still handles the genuinely
+easy cases cleanly amid all the harder ones logged above.
+
+## Real picoCTF target — "Includes" (Web Exploitation, Easy) — both flag fragments read correctly, but a stray space introduced joining them by hand made the reported flag wrong
+
+Target `saturn.picoctf.net:51408`. Three clean `fetch_url` GETs (`/`, `script.js`, `style.css`) —
+every fetch succeeded, no tool bugs, no fabrication of a fragment. `style.css` ends
+`/*  picoCTF{1nclu51v17y_1of2_  */` and `script.js` ends `//  f7w_2of2_df589022}` — the challenge
+name itself ("Includes") and the `1of2`/`2of2` labels signal the flag is split across the two
+included files, meant to be concatenated. The agent correctly identified and read both real
+fragments, but joined them by hand as `picoCTF{1nclu51v17y_1of2_ f7w_2of2_df589022}` — one stray
+space in the middle that isn't part of either source string (both comments just have loose
+whitespace padding around the actual token, from formatting, not content). Confirmed directly:
+concatenating the two fragments with nothing between them gives
+`picoCTF{1nclu51v17y_1of2_f7w_2of2_df589022}`, the real flag.
+
+A new failure subtype, distinct from prior fabrication bugs — every individual piece here was
+genuine, verbatim, and correctly sourced; the mistake was purely in the manual reassembly step.
+
+**First fix attempt (prompt-only) was tried and confirmed insufficient.** Added an explicit
+`_UNTRUSTED_DATA_NOTICE` instruction to concatenate multi-part flag fragments precisely, citing
+this exact case. Re-ran the agent against a fresh instance — **same bug recurred**, same stray
+space in the same place, despite the new instruction. This is now the second confirmed case in
+this project (after the header-mangling bug) where a docstring/prompt-only warning did not
+reliably stop a manual-reassembly error from recurring.
+
+**Second fix (code-level) — new tool, not just another warning.** Added
+`agent/tools/fetch_fragments.py`'s `fetch_and_join_fragments(base_url, paths, pattern, group)`:
+fetches every path in order, extracts each fragment via a server-side regex, strips it, and
+concatenates all fragments with no separator — all in one call, so the fragment text never has to
+pass through the model's own final answer at all. One pattern
+(`(?:/\*|//)\s*(.*?)\s*(?:\*/|$)`) handles both this challenge's comment styles (CSS/JS block
+comment and a line comment) in a single call. `_UNTRUSTED_DATA_NOTICE` rewritten to point at the
+tool directly instead of repeating the "be careful" instruction. Wired into the host-allowlist
+gate via the same `base_url` handling `dir_enum` already uses. Verified against a local server
+replicating the real challenge's exact content (the live instance had rotated/expired by the time
+this fix landed): correct joined flag, no stray space. New regression tests in
+`evals/test_tools_smoke.py`.
+
+**Re-run through the actual agent, post-fix — solved end-to-end, no human intervention and no
+stray space.** Confirms the fix, not just the direct/local-fixture verification above: the agent
+called `fetch_and_join_fragments` and reached `picoCTF{1nclu51v17y_1of2_f7w_2of2_df589022}` on
+its own. Logged in `evals/solved_challenges.md`.
+
+## Real picoCTF target — "Cookies" (Web Exploitation, Easy) — flag captured by brute-forcing a cookie value
+
+Target `wily-courier.picoctf.net:49660`. The `name` cookie indexes into a server-side list of
+cookie types (`POST /search` with `name=snickerdoodle` set the cookie to `0`). Incrementing the
+`name` cookie value on `GET /check` past the normal in-bounds range (`0` → tried up to `18`)
+returned the flag directly — a classic out-of-bounds/array-index brute-force, no special tooling
+needed beyond `fetch_url` with a manually-set `Cookie` header. Clean solve, no bugs hit, no human
+intervention.
+
+## Real picoCTF target — "Scavenger Hunt" (Web Exploitation) — the tool computed the correct flag internally, but its own debug output tricked the flag-detection regex into reporting garbage
+
+Target `wily-courier.picoctf.net:56174`, a 5-way version of the same split-flag pattern as
+"Includes" (`index.html`, `mycss.css`, `robots.txt`, `.htaccess`, `.DS_Store` each hold one
+fifth). The agent needed a few tries to find a `pattern` that correctly captured all 5 fragments
+(two earlier attempts used patterns that didn't match consistently across the differently-styled
+files), but the winning call to `fetch_and_join_fragments` **did** compute the exactly correct
+flag internally — its own `Joined: picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` line proves it.
+Despite that, the dashboard's flag box showed
+`picoCTF{t' mycss.css: 'h4ts_4_l0' robots.txt: 't_0f_pl4c' .htaccess: '3s_2_lO0k' .DS_Store:
+'_9588550}` — garbage built out of the tool's own debug listing, not the real answer.
+
+**Root cause, entirely inside `fetch_and_join_fragments`'s own output formatting** (not a repeat
+of any previously-fixed bug): the tool printed a per-fragment debug listing ("Fragments (in
+order): ...") *before* the "Joined: ..." line. `agent/graph.py`'s `observe()` (backing the
+verified `data-flag` UI part) does a left-to-right regex search (`FLAG_PATTERN`) over the whole
+tool result for the first `picoCTF{...}`-shaped span. Since the *first* fragment of a split flag
+is, by construction, always the start of the real flag (`index.html: 'picoCTF{t'` here), the
+debug listing itself contains an accidental, unclosed `picoCTF{` — and the regex greedily matched
+from there all the way to the next stray `}` character, which landed inside a *different*
+fragment's repr several lines later (`.DS_Store: '_9588550}'`), stitching together a nonsense
+"flag" out of raw debug text instead of ever reaching the real "Joined:" line.
+
+**Confirmed this also silently affected the earlier "Includes" fix**, not just this new
+challenge: replaying the exact old (pre-this-fix) output ordering against `Includes`'s own
+2-fragment case through the real `FLAG_PATTERN` regex reproduces the identical failure shape
+(`"picoCTF{1nclu51v17y_1of2_'\nscript.js: 'f7w_2of2_df589022}"` instead of the clean flag) — so
+that earlier "the flag is correct" confirmation was very likely reading the model's own prose
+(which can reason over the whole tool output regardless of order) rather than the actual verified
+flag box, which was probably wrong the whole time without anyone noticing. Worth a quick
+re-check of Includes' flag box specifically if it's easy to re-run.
+
+**Fix**: reordered `fetch_and_join_fragments`'s payload so `Joined: <flag>` comes first, before
+the debug listing — the regex now matches the real answer immediately and never reaches the
+debug section. Verified directly: replaying the exact live scenario (5 fragments, first one
+starting with `picoCTF{`) through the real `observe()` function now correctly returns
+`{"flag": "picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}"}`. New regression test in
+`evals/test_tools_smoke.py` exercises `fetch_and_join_fragments` output through `observe()`
+directly (not just checking the flag appears as a substring somewhere, which the old test did and
+which is why this didn't get caught earlier). Full suite passes.
+
+**Second, distinct bug found on the very next re-run — a real limitation of the tool's design,
+not a repeat.** With the ordering fix live, the agent needed a few tries to write a working
+`pattern`, and its final attempt returned
+`picoCTF{t --> </div> </div> </body> </html>h4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` — the `index.html`
+fragment alone was garbled with a chunk of trailing HTML. Root-caused directly by fetching all 5
+real files: this challenge's fragments are wrapped completely differently per file — `index.html`
+uses an HTML comment (`<!-- Here's the first part of the flag: picoCTF{t -->`, which contains
+**no `}` character anywhere**), `mycss.css` uses a CSS block comment (`/* ... */`), `robots.txt`
+and `.htaccess` each use a `#` line comment, and `.DS_Store` has **no comment delimiter at all**
+around its fragment, just a "Part 5:" label. The agent's pattern
+(`picoCTF\{[^}]*|...`) relied on hitting a literal `}` to stop matching — but `index.html`'s own
+response body has no `}` anywhere in it, so `[^}]*` consumed the entire rest of that file's HTML
+instead of stopping at the real fragment (the actual flag-closing `}` is in a completely
+different file's response, invisible to a per-file regex search).
+
+This exposed a genuine design gap: `fetch_and_join_fragments` originally forced one shared
+`pattern` across every path, which cannot correctly bound genuinely different comment styles at
+once. Fixed by adding an optional `patterns` parameter (one regex per path, newline-separated,
+validated 1:1 against `paths`) alongside the existing single-`pattern` mode — `pattern` still
+works for the common case where every file really does share one format. `_UNTRUSTED_DATA_NOTICE`
+updated to explain when to reach for `patterns` instead of `pattern`. Verified directly against
+the live instance with 5 file-specific patterns: correct flag,
+`picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}`, confirmed both in the tool's own output and
+through `observe()`. New regression tests replicate the real 5-file content shape (including a
+sanity check that the *old* single-pattern behavior still reproduces the over-match bug, proving
+the fix addresses a real failure and isn't just theoretical). Full suite passes.
+
+**Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.**
+Confirms both fixes, not just the direct/local-fixture verification above: the agent used the new
+`patterns` argument correctly and reached `picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` on its
+own. Logged in `evals/solved_challenges.md`.
 
 ## Models ruled out — don't retry these
 
