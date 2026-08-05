@@ -8,17 +8,17 @@ import { FlagDisplay } from "@/components/flag-display";
 import { StatusIndicator } from "@/components/status-indicator";
 import { TraceView } from "@/components/trace-view";
 
-// Mirrors agent/tools/find_flag_pattern.py's FLAG_PATTERN -- keep the two in sync. A bare
-// "flag{...}" literal (the original version of this regex) misses picoCTF's own format
-// entirely: picoCTF{...} has no "flag" substring in it at all.
-const FLAG_PATTERN = /\b(?:flag|ctf|htb|picoctf)\{[^{}]{1,300}\}/i;
-
+// Read the backend-verified flag off a "data-flag" part (written by route.ts only when
+// agent/graph.py's observe() actually matched a flag in a real tool result), never by regexing
+// the model's own free-text answer for anything flag-shaped. The regex approach this replaced
+// was a real, observed bug: on a challenge needing a manual byte-cipher decode, the model gave
+// up partway through and typed a fabricated flag-shaped string into its prose -- the backend
+// correctly never verified it, but a shape-only check lit the flag box up with it anyway.
 function extractFlag(message: UIMessage): string {
-  const text = message.parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("");
-  return text.match(FLAG_PATTERN)?.[0] ?? "";
+  const flagPart = message.parts.find(
+    (part): part is { type: "data-flag"; data: { flag: string } } => part.type === "data-flag"
+  );
+  return flagPart?.data.flag ?? "";
 }
 
 export default function Dashboard() {
