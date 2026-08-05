@@ -14,6 +14,17 @@ type PendingApproval = {
   interrupt: { tool: string; args: Record<string, unknown>; target: string };
 };
 
+// Shape written into a "data-trace" message part on a completed run. /solve's JSON
+// response already carries this (category, tool_calls from extract_tool_trace()) --
+// this type just makes it a first-class UI part instead of flattening it into the
+// plain-text summary, which is all route.ts did before.
+type ToolCallTrace = { name: string; args: Record<string, unknown>; result: string | null };
+type RunTrace = {
+  category: string | null;
+  steps: number;
+  toolCalls: ToolCallTrace[];
+};
+
 function textOf(message: UIMessage): string {
   return (message.parts ?? [])
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
@@ -55,6 +66,7 @@ export async function POST(req: Request) {
 
       let text: string;
       let approval: PendingApproval | null = null;
+      let trace: RunTrace | null = null;
 
       try {
         const res = pending
@@ -87,13 +99,14 @@ export async function POST(req: Request) {
               'Use the Approve / Deny buttons below (or reply "approve" / "deny").',
             ].join("\n");
           } else {
-            text = [
-              `Category: ${result.category ?? "unknown"}`,
-              `Steps: ${result.steps}`,
-              "",
-              result.final_answer ?? "",
-              result.flag ? `\nFlag: ${result.flag}` : "",
-            ].join("\n");
+            trace = {
+              category: result.category ?? null,
+              steps: result.steps,
+              toolCalls: result.tool_calls ?? [],
+            };
+            text = [result.final_answer ?? "", result.flag ? `\nFlag: ${result.flag}` : ""]
+              .join("\n")
+              .trim();
           }
         }
       } catch (err) {
@@ -107,6 +120,9 @@ export async function POST(req: Request) {
 
       if (approval) {
         writer.write({ type: "data-approval", id: crypto.randomUUID(), data: approval });
+      }
+      if (trace) {
+        writer.write({ type: "data-trace", id: crypto.randomUUID(), data: trace });
       }
     },
   });
