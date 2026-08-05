@@ -69,13 +69,45 @@ def build_flag_pattern(extra_prefixes=None) -> re.Pattern:
 # a run supplies its own per-request prefixes (see AgentState.flag_prefixes in agent/graph.py).
 FLAG_PATTERN = build_flag_pattern(os.getenv("FLAG_PREFIXES"))
 
+# Braced content that's clearly an unfilled template rather than a real, computed flag --
+# confirmed live: a picoCTF "Shared Secrets" challenge's OWN generator script (encryption.py)
+# literally contained `flag = b"picoCTF{...}"` as a placeholder (the real flag gets substituted
+# in only when the challenge instance is built). [^{}]{1,300} places no requirement on the
+# content being real, only on it not containing another brace, so it matched "picoCTF{...}"
+# straight out of the raw source. This isn't a hypothetical edge case: local-file tools
+# (read_local_file, extract_metadata, etc.) routinely return a challenge's own source/generator
+# code, which very often contains exactly this kind of unfilled template -- and once matched,
+# this ended the run immediately (observe()'s flag-detection triggers early-exit) with a
+# fabricated "flag" that was never actually computed, before the agent ever found or read the
+# real data file the script writes its output to.
+_PLACEHOLDER_TOKENS = frozenset({
+    "...", "..", "???", "??", "?", "todo", "fixme", "redacted", "xxx", "tbd",
+    "placeholder", "your_flag_here", "flag_here", "insert_flag_here", "n/a", "none", "null",
+})
+
+
+def _looks_like_placeholder(full_match: str) -> bool:
+    """True if the content inside a flag{...}-shaped match's braces looks like an unfilled
+    template rather than a real, computed flag (no actual alphanumeric content at all, e.g.
+    just "..." or "???", or an exact match against a known placeholder token like "REDACTED")."""
+    inner = full_match.partition("{")[2]
+    if inner.endswith("}"):
+        inner = inner[:-1]
+    stripped = inner.strip()
+    if not stripped or not re.search(r"[A-Za-z0-9]", stripped):
+        return True
+    return stripped.lower() in _PLACEHOLDER_TOKENS
+
 
 @tool
 def find_flag_pattern(text: str) -> str:
     """Search text for CTF-style flag patterns such as flag{...}, CTF{...}, HTB{...}, or
     picoCTF{...} (plus any extra prefixes configured via the FLAG_PREFIXES env var). Returns
-    every match found, or a message if none are present."""
-    matches = FLAG_PATTERN.findall(text)
+    every match found, or a message if none are present. Skips matches that look like an
+    unfilled template (e.g. picoCTF{...} or picoCTF{???} sitting in a challenge's own source
+    code) rather than a real flag -- if you see one of those in a file's raw content, that's a
+    signal the real value lives somewhere else, not a solved answer."""
+    matches = [m for m in FLAG_PATTERN.findall(text) if not _looks_like_placeholder(m)]
     if not matches:
         return "No flag pattern found."
     return "\n".join(matches)

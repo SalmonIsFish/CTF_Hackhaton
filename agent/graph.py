@@ -37,9 +37,15 @@ from agent.tools.dir_enum import dir_enum
 from agent.tools.fetch_fragments import fetch_and_join_fragments
 from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import close_all_http_sessions, fetch_url
-from agent.tools.find_flag_pattern import FLAG_PATTERN, build_flag_pattern, find_flag_pattern
+from agent.tools.find_flag_pattern import (
+    FLAG_PATTERN,
+    _looks_like_placeholder,
+    build_flag_pattern,
+    find_flag_pattern,
+)
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
+from agent.tools.math_tools import dh_shared_secret_decrypt, modpow
 from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import radare2_analyze
 from agent.tools.read_local_file import read_local_file
@@ -302,8 +308,9 @@ _UNTRUSTED_DATA_NOTICE = (
     "challenge's own data — either a LIVE-TARGET network tool (fetch_url, dir_enum, "
     "tcp_open/tcp_send, port_scan, fetch_and_decode_cipher, fetch_and_join_fragments) reaching "
     "the challenge's own host, OR a LOCAL-FILE tool (extract_metadata, read_local_file, "
-    "identify_and_decode, keyed_byte_decode, extract_hidden_key, rsa_decrypt_file, "
-    "radare2_analyze) actually reading the challenge's own downloaded file(s). This applies "
+    "identify_and_decode, keyed_byte_decode, extract_hidden_key, rsa_decrypt_file, modpow, "
+    "dh_shared_secret_decrypt, radare2_analyze) actually reading the challenge's own downloaded "
+    "file(s). This applies "
     "EQUALLY to offline/local-file challenges (crypto, forensics, reverse engineering) as it "
     "does to live web targets — the absence of a URL does not relax this rule, and describing a "
     "correct-sounding recipe ('inspect the metadata, decode the hex, decrypt with the key') is "
@@ -318,7 +325,18 @@ _UNTRUSTED_DATA_NOTICE = (
     "all in one call) and rsa_decrypt_file (decrypt a ciphertext file with a local PEM key, "
     "trying every common padding scheme automatically) — RSA decryption genuinely cannot be "
     "computed correctly by reasoning through it token by token, so use these rather than "
-    "describing the math. Before answering ANY challenge, offline or online, check the "
+    "describing the math. The same is true of Diffie-Hellman-style 'shared secret' challenges: a "
+    "real, confirmed failure had a model correctly identify the whole algorithm (shared = "
+    "pow(A, b, p), then XOR-decrypt with shared % 256) and even write out real-looking Python "
+    "narrating the computation in its final answer — but it never actually executed that code, "
+    "and the flag it stated as if the code had run was completely wrong. modpow(base, exponent, "
+    "modulus) and dh_shared_secret_decrypt(public_key, exponent, modulus, ciphertext_hex) exist "
+    "for exactly this — modular exponentiation on numbers with hundreds of digits cannot be done "
+    "correctly by reasoning through it, only by actually running the computation. If you find "
+    "yourself about to write out a code block in your final answer 'showing' a calculation "
+    "instead of having already called a tool that performed it, stop — that code block was never "
+    "executed, and any flag it 'produces' is fabricated. Before answering ANY challenge, offline "
+    "or online, check the "
     "tool-call history for THIS run: if no tool actually touched the challenge's own file/target "
     "and returned the flag verbatim, you have not solved it yet, no matter how standard or "
     "recognizable the technique looks.\n\n"
@@ -395,6 +413,8 @@ TOOLS = [
     read_local_file,
     extract_hidden_key,
     rsa_decrypt_file,
+    modpow,
+    dh_shared_secret_decrypt,
     search_vault,
     search_skills,
     web_search,
@@ -436,9 +456,9 @@ def observe(state: "AgentState") -> dict:
             break
         if message.name in _REFERENCE_ONLY_TOOLS:
             continue
-        match = pattern.search(message.content)
-        if match:
-            return {"flag": match.group(0)}
+        for match in pattern.finditer(message.content):
+            if not _looks_like_placeholder(match.group(0)):
+                return {"flag": match.group(0)}
     return {}
 
 

@@ -1084,6 +1084,69 @@ had. New regression tests in `evals/test_model_router_smoke.py` (stub model that
 transiently N times then recovers; `time.sleep` mocked out so tests run instantly, no real
 delay). Full suite passes.
 
+## Local file challenge — "Shared Secrets" (Cryptography) — a false-positive flag ended the run before the real file was found, then a real capability gap fabricated a wrong answer
+
+Target `PICOCHALLENGE/Shared Secrets/` (`encryption.py` — the challenge's own DH-with-XOR
+generator script — and `message (1).txt` — the actual captured data: real `g`, `p`, `A`, a
+leaked `b`, and the ciphertext). Hints: "someone leaked something," "combine a public key with a
+known private one" — a Diffie-Hellman exchange where the "secret" exponent `b` was accidentally
+captured alongside the public values, letting you compute the shared secret directly.
+
+**Attempt 1 — the agent's final answer was the literal string `picoCTF{...}`, copied verbatim
+out of the challenge's own generator script.** The run made exactly ONE tool call
+(`read_local_file` on `encryption.py`) and then stopped. `encryption.py` is a template/generator
+script — it contains `flag = b"picoCTF{...}"` as an unfilled placeholder (the real flag gets
+substituted in only when the actual challenge instance is built) and `b = '???'` (the real
+exponent isn't in this file at all — it's redacted here specifically because it leaks
+separately, in `message (1).txt`, which is the whole point of the challenge).
+
+**Root cause, confirmed directly**: this wasn't primarily a reasoning failure — it was a control-flow
+bug. `agent/graph.py`'s `observe()` (which decides `state["flag"]`, ending the run the moment it's
+set) uses `FLAG_PATTERN = r"\b(?:flag|ctf|htb|picoctf)\{[^{}]{1,300}\}"` — this places NO
+requirement on the braced content being real, only that it not contain another brace. Reproduced
+directly: feeding `read_local_file`'s actual output for `encryption.py` straight into `observe()`
+returns `{"flag": "picoCTF{...}"}` — the run legitimately ended right there, before the agent had
+any chance to notice `message (1).txt` even existed. This is a genuinely new failure shape from
+everything found so far: not the model being sloppy, but the backend's own verification accepting
+a match it should never have accepted, because local-file tools (recently added to the valid-flag-
+source list) routinely return a challenge's own source/generator code, which often contains exactly
+this kind of unfilled template.
+
+**Fixed**: added `_looks_like_placeholder()` to `agent/tools/find_flag_pattern.py` — rejects a
+match whose braced content has no real alphanumeric characters at all (`...`, `???`, whitespace)
+or exactly matches a known placeholder token (`REDACTED`, `TODO`, `FIXME`, etc.). Wired into both
+`find_flag_pattern` (the tool) and `observe()` (upgraded from `pattern.search()` — first match
+only — to `pattern.finditer()` — skip placeholder matches, keep scanning for a real one in the
+same message). Verified: the exact `encryption.py` content now correctly returns no flag; a real
+flag sitting right next to a placeholder in the same text is still found correctly.
+
+**Attempt 2, with the placeholder fix live — the run continued past `encryption.py`, correctly
+found and read `message (1).txt`, correctly derived the entire right algorithm (`shared =
+pow(A, b, p)`, then XOR each ciphertext byte with `shared % 256`) — and then fabricated a
+completely different, wrong flag anyway.** The model wrote real, correct-looking Python in its
+final answer narrating the computation, as if it had executed it — but it never actually ran
+anything; there was no tool for modular exponentiation on 1000+-bit numbers, so it "reasoned"
+through the arithmetic and stated a plausible-looking result that doesn't match the real answer.
+This is the exact same capability gap as StegoRSA's RSA decryption, just for the underlying
+modular-exponentiation primitive instead: recognizing the right technique was never the gap;
+having a way to *execute* it was.
+
+**Fixed**: added `agent/tools/math_tools.py` — `modpow(base, exponent, modulus)` (general
+arbitrary-precision modular exponentiation) and `dh_shared_secret_decrypt(public_key, exponent,
+modulus, ciphertext_hex)` (the full DH-shared-secret-then-XOR-decrypt pattern in one call, no
+separate mod-256 or hex-decode step for the model to fumble). `_UNTRUSTED_DATA_NOTICE` updated
+with an explicit warning: if you're about to write a code block in your final answer "showing" a
+calculation instead of having already called a tool that performed it, stop — that code was never
+executed, and any flag it "produces" is fabricated.
+
+**Verified fully end-to-end through the real agent, both fixes live, against the real challenge
+files**: 4 steps, `read_local_file` → `dh_shared_secret_decrypt`, correct real flag
+`picoCTF{dh_s3cr3t_9982ffe6}`, no fabrication. New regression tests for `_looks_like_placeholder`
+(both the standalone tool and `observe()`), `modpow`, and `dh_shared_secret_decrypt` (including a
+real numeric round-trip against this exact challenge's actual captured data). Full suite passes
+(same pre-existing unrelated `radare2_analyze`/WSL and Windows-socket flakiness noted earlier,
+neither touched by this change). Logged in `evals/solved_challenges.md`.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

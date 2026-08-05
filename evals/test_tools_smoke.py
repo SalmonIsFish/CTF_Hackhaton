@@ -20,7 +20,13 @@ from agent.tools.dir_enum import dir_enum
 from agent.tools.fetch_fragments import fetch_and_join_fragments
 from agent.tools.extract_metadata import extract_metadata
 from agent.tools.fetch_url import fetch_url
-from agent.tools.find_flag_pattern import DEFAULT_PREFIXES, build_flag_pattern, find_flag_pattern
+from agent.tools.find_flag_pattern import (
+    DEFAULT_PREFIXES,
+    _looks_like_placeholder,
+    build_flag_pattern,
+    find_flag_pattern,
+)
+from agent.tools.math_tools import dh_shared_secret_decrypt, modpow
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
@@ -47,6 +53,48 @@ print(picoctf_result)
 assert "picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}" in picoctf_result, (
     f"expected the picoCTF-format flag to be recognized -- 'ctf' has no word boundary right "
     f"after 'pico', which is exactly the bug this regression-tests, got {picoctf_result}"
+)
+
+print(
+    "\n=== find_flag_pattern: unfilled template placeholders (picoCTF{...}, picoCTF{???}) are "
+    "rejected, not reported as real flags -- regression test for a real, confirmed failure: a "
+    "picoCTF 'Shared Secrets' challenge's OWN generator script (encryption.py) literally "
+    "contained `flag = b\"picoCTF{...}\"` as an unfilled template. [^{}]{1,300} placed no "
+    "requirement on the content being real, only on it not containing another brace, so it "
+    "matched straight out of the raw source -- and since agent/graph.py's observe() treats any "
+    "match as a solved flag, this ended the run immediately with a fabricated 'flag' before the "
+    "agent ever found or read the challenge's actual captured data file ==="
+)
+for placeholder_text in (
+    'flag = b"picoCTF{...}"',
+    "the flag is picoCTF{???}",
+    "picoCTF{REDACTED}",
+    "picoCTF{}",  # empty content -- also not a real flag
+):
+    placeholder_result = find_flag_pattern.invoke({"text": placeholder_text})
+    print(f"{placeholder_text!r} -> {placeholder_result!r}")
+    assert placeholder_result == "No flag pattern found.", (
+        f"expected the placeholder in {placeholder_text!r} to be rejected, got {placeholder_result!r}"
+    )
+
+print(
+    "\n=== find_flag_pattern: a real flag alongside a placeholder in the same text still gets "
+    "found -- the placeholder check filters individual matches, not the whole text ==="
+)
+mixed_result = find_flag_pattern.invoke({
+    "text": 'template: flag = b"picoCTF{...}" but the real one is picoCTF{dh_s3cr3t_9982ffe6}',
+})
+print(mixed_result)
+assert mixed_result == "picoCTF{dh_s3cr3t_9982ffe6}", (
+    f"expected only the real flag to survive, with the placeholder filtered out, got {mixed_result}"
+)
+
+print("\n=== _looks_like_placeholder: sanity checks on the helper directly ===")
+assert _looks_like_placeholder("picoCTF{...}")
+assert _looks_like_placeholder("picoCTF{???}")
+assert _looks_like_placeholder("picoCTF{  }")
+assert not _looks_like_placeholder("picoCTF{dh_s3cr3t_9982ffe6}"), (
+    "a real flag with actual alphanumeric content must never be treated as a placeholder"
 )
 
 print(
@@ -359,6 +407,54 @@ with _tempfile.TemporaryDirectory() as _tmpdir3:
     )
 
 print(
+    "\n=== modpow + dh_shared_secret_decrypt: real Diffie-Hellman shared-secret computation -- "
+    "regression test for a real, confirmed failure: given this exact challenge shape, a model "
+    "correctly identified the whole algorithm and even wrote real-looking Python narrating the "
+    "computation in its final answer, but never actually executed it -- the flag it stated as "
+    "if the code had run was completely wrong. Real numbers from picoCTF's 'Shared Secrets' "
+    "challenge; real flag: picoCTF{dh_s3cr3t_9982ffe6} ==="
+)
+_dh_p = "2549189574813286838731164889759660985718829773591105476199519705873412196312430317020838926243603568621442315899465054113173947320336232433955810978828549997135650568305743237094254970976323874275496906890604182065479938670042325573071240425116728265626285703063369264515156139785599306841009782845534345233632656299"
+_dh_A = "985445375040965660286925493195705022105311734388727844225279873957046781773616909873718436322630406874986079724535489250394868561673679481570937115431819833192904575232350968046861369069756001815958202523940582773045326660550531101765085548729437758998731821183288714745944939562470177082773230192655925648636693128"
+_dh_b = "2531748005435027320362428017101462589109367420602712788105635351744163633032425558043495896092073893867970357855640982255766093320905998447373338799811757556564212066483256443137066327562660885114225713445384050398429354624442622758857644344928037376358520893635120478670063221879818261074326351747274950092218676710"
+_dh_enc = "4d545e527e697b465955624e0e5e4f0e49620404050f5b5b580b40"
+
+modpow_result = modpow.invoke({"base": _dh_A, "exponent": _dh_b, "modulus": _dh_p})
+print(modpow_result)
+assert modpow_result == "1611677189114812825149716158968732160651122397471791833467001594009658299196717372486042257866544376266445988905569334709388744891111642232673722817301720967498664742191954389210720275730748315629194771205794593361542504869803156206850438554554059621309092234711061578703901789188801310777808741046746170047523346237", (
+    f"expected the real, correct modular exponentiation result, got {modpow_result}"
+)
+
+dh_result = dh_shared_secret_decrypt.invoke({
+    "public_key": _dh_A, "exponent": _dh_b, "modulus": _dh_p, "ciphertext_hex": _dh_enc,
+})
+print(dh_result)
+assert "picoCTF{dh_s3cr3t_9982ffe6}" in dh_result, (
+    f"expected the real, correctly-decrypted flag, got {dh_result}"
+)
+
+print("\n=== modpow: non-numeric input is a clean error, not an exception ===")
+bad_modpow_result = modpow.invoke({"base": "not_a_number", "exponent": "2", "modulus": "7"})
+print(bad_modpow_result)
+assert "must all be decimal integers" in bad_modpow_result, (
+    f"expected a clean input-validation message, got {bad_modpow_result}"
+)
+
+print("\n=== modpow: zero modulus is a clean error, not a ZeroDivisionError ===")
+zero_modulus_result = modpow.invoke({"base": "2", "exponent": "3", "modulus": "0"})
+print(zero_modulus_result)
+assert "modulus must not be zero" in zero_modulus_result, (
+    f"expected a clean zero-modulus message, got {zero_modulus_result}"
+)
+
+print("\n=== dh_shared_secret_decrypt: invalid hex ciphertext is a clean error, not an exception ===")
+bad_hex_result = dh_shared_secret_decrypt.invoke({
+    "public_key": "5", "exponent": "3", "modulus": "23", "ciphertext_hex": "not hex at all",
+})
+print(bad_hex_result)
+assert "not valid hex" in bad_hex_result, f"expected a clean invalid-hex message, got {bad_hex_result}"
+
+print(
     "\n=== build_system_prompt: priority-order guardrail present -- regression test for a real, "
     "confirmed failure: with a matched skill-pack category, the system prompt told the model to "
     "call search_skills 'before relying on general knowledge' unconditionally, so given a local "
@@ -480,6 +576,49 @@ live_flag_state = {
 live_flag_result = observe(live_flag_state)
 print(live_flag_result)
 assert live_flag_result == {"flag": "HTB{real_target_flag}"}, "expected the real fetch_url-derived flag, not the vault decoy"
+
+print(
+    "\n=== observe: ignores an unfilled template placeholder in a local-file tool's raw source "
+    "code -- regression test for the exact live 'Shared Secrets' failure: read_local_file "
+    "returned encryption.py's content verbatim, which contains flag = b\"picoCTF{...}\" as a "
+    "template, and observe() used to accept that bare match as a solved flag, ending the run "
+    "before the agent ever found the real captured-data file ==="
+)
+placeholder_source_state = {
+    "messages": [
+        ToolMessage(
+            content='file: encryption.py\n\nflag = b"picoCTF{...}"\nenc = bytes([...])',
+            name="read_local_file",
+            tool_call_id="call-1",
+        ),
+    ]
+}
+placeholder_source_result = observe(placeholder_source_state)
+print(placeholder_source_result)
+assert placeholder_source_result == {}, (
+    f"expected the placeholder in the source code to be ignored, not treated as a solved flag, "
+    f"got {placeholder_source_result}"
+)
+
+print(
+    "\n=== observe: a real flag is still found even after skipping an earlier placeholder match "
+    "in the same tool result ==="
+)
+placeholder_then_real_state = {
+    "messages": [
+        ToolMessage(
+            content='flag = b"picoCTF{...}"  # template\nDecrypted: picoCTF{dh_s3cr3t_9982ffe6}',
+            name="dh_shared_secret_decrypt",
+            tool_call_id="call-1",
+        ),
+    ]
+}
+placeholder_then_real_result = observe(placeholder_then_real_state)
+print(placeholder_then_real_result)
+assert placeholder_then_real_result == {"flag": "picoCTF{dh_s3cr3t_9982ffe6}"}, (
+    f"expected the real flag to be found despite an earlier placeholder in the same message, "
+    f"got {placeholder_then_real_result}"
+)
 
 print(
     "\n=== build_system_prompt: fabrication guardrail present (regression test -- confirmed live "
