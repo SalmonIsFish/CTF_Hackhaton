@@ -67,6 +67,12 @@
       "skillPath": "skills/ir-report-builder/SKILL.md",
       "computedHash": "c841efac787b789c129f5d01d7e0bf92d0f29754b11b47f1d77b971a07ce57b1"
     },
+    "shadcn": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "skillPath": "skills/shadcn/SKILL.md",
+      "computedHash": "c1a68ee06a668aced9ab2b5fbdea5f989864123794eb2e056b339a072dbb7f10"
+    },
     "siem-detection-engineer": {
       "source": "arttapon1/defensive-soc-skills",
       "sourceType": "github",
@@ -84,6 +90,12 @@
       "sourceType": "github",
       "skillPath": "solve-challenge/SKILL.md",
       "computedHash": "096280be94c305a232dc1e82e236e71fe795a2406c8e95b7164e2702bb158a4c"
+    },
+    "web-design-guidelines": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/web-design-guidelines/SKILL.md",
+      "computedHash": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
     }
   }
 }

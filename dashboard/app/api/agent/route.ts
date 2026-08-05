@@ -14,6 +14,17 @@ type PendingApproval = {
   interrupt: { tool: string; args: Record<string, unknown>; target: string };
 };
 
+// Shape written into a "data-trace" message part on a completed run. /solve's JSON
+// response already carries this (category, tool_calls from extract_tool_trace()) --
+// this type just makes it a first-class UI part instead of flattening it into the
+// plain-text summary, which is all route.ts did before.
+type ToolCallTrace = { name: string; args: Record<string, unknown>; result: string | null };
+type RunTrace = {
+  category: string | null;
+  steps: number;
+  toolCalls: ToolCallTrace[];
+};
+
 function textOf(message: UIMessage): string {
   return (message.parts ?? [])
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
@@ -55,6 +66,7 @@ export async function POST(req: Request) {
 
       let text: string;
       let approval: PendingApproval | null = null;
+      let trace: RunTrace | null = null;
       // Backend-verified flag only (agent/graph.py's observe() node, which only ever sets this
       // from a real tool result against the live target -- never from the model's own prose).
       // Kept separate from `text` so the UI's flag box can key off this instead of regexing the
@@ -94,14 +106,15 @@ export async function POST(req: Request) {
               'Use the Approve / Deny buttons below (or reply "approve" / "deny").',
             ].join("\n");
           } else {
+            trace = {
+              category: result.category ?? null,
+              steps: result.steps,
+              toolCalls: result.tool_calls ?? [],
+            };
             verifiedFlag = result.flag ?? null;
-            text = [
-              `Category: ${result.category ?? "unknown"}`,
-              `Steps: ${result.steps}`,
-              "",
-              result.final_answer ?? "",
-              result.flag ? `\nFlag: ${result.flag}` : "",
-            ].join("\n");
+            text = [result.final_answer ?? "", result.flag ? `\nFlag: ${result.flag}` : ""]
+              .join("\n")
+              .trim();
           }
         }
       } catch (err) {
@@ -115,6 +128,9 @@ export async function POST(req: Request) {
 
       if (approval) {
         writer.write({ type: "data-approval", id: crypto.randomUUID(), data: approval });
+      }
+      if (trace) {
+        writer.write({ type: "data-trace", id: crypto.randomUUID(), data: trace });
       }
       if (verifiedFlag) {
         writer.write({ type: "data-flag", id: crypto.randomUUID(), data: { flag: verifiedFlag } });

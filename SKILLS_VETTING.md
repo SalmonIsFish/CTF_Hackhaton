@@ -137,3 +137,52 @@ thorough manual read doesn't fully offset; acceptable for a hackathon project wh
 nothing in this pack executes automatically (an agent has to deliberately invoke
 these scripts), not something I'd wave through for production SOC automation
 without more outside review first.
+
+## Installed: `shadcn/ui` skill `shadcn`, `vercel-labs/agent-skills` skill `web-design-guidelines` (2026-08-05)
+
+**What they are:** not CTF-technique packs like everything above — these are
+**Claude-Code-authoring aids** for the dashboard UI redesign (component library
+knowledge + an accessibility/UX audit checklist), not something the runtime CTF
+agent's `search_skills` tool needs to see. Both are **vendor-published**
+(officialskills.sh-tier accountability, the top preference in this checklist):
+`shadcn` is published by the shadcn/ui org itself, `web-design-guidelines` by
+`vercel-labs` (Vercel's own org).
+
+**Installed via:**
+`npx skills add shadcn/ui --skill shadcn --agent claude-code` and
+`npx skills add vercel-labs/agent-skills --skill web-design-guidelines --agent claude-code`.
+
+**Where they landed — a real deviation from every prior install above, noted for
+whoever reads this next:** both went into `.claude/skills/`, not this repo's usual
+`.agents/skills/` convention. That's expected here, not a bug to fix: `.agents/skills/`
+is specifically what `agent/tools/search_skills.py` reads to ground the *runtime CTF
+agent's* answers (per `CLAUDE.md` §4's "two different consumers of the same folder"
+distinction) — these two skills are for me while building the dashboard, the same
+role `.mcp.json`'s seekstone vault access already plays, so `.claude/skills/` (Claude
+Code's own skill directory) is the correct target, and nothing needs moving.
+
+**Checklist review:**
+- `shadcn`'s `SKILL.md`: pure Markdown guidance (component patterns, CLI usage,
+  styling rules) plus a handful of linked `rules/*.md` reference files — no scripts,
+  no obfuscation, no base64. `allowed-tools` frontmatter is scoped tightly to
+  `Bash(npx shadcn@latest *)` / `pnpm dlx shadcn@latest *` / `bunx --bun shadcn@latest
+  *` only — not unrestricted Bash — which matches the checklist's ask, since the
+  skill's entire job is running that one CLI. The CLI does hit shadcn's component
+  registry over the network to fetch component source; that's the stated
+  functionality (installing UI components), not a red flag.
+- `web-design-guidelines`'s `SKILL.md`: even smaller surface — no `allowed-tools`
+  restriction declared, but the described behavior is read-only (reads the target
+  files, fetches one known `raw.githubusercontent.com/vercel-labs/...` URL for the
+  current guideline rules, outputs findings as text). No credential access, no writes.
+- Both post-install scanner results: Gen=Safe, Socket=0 alerts, **Snyk=Med Risk** on
+  both. Per this file's own precedent with `ctf-skills` (Critical labels on
+  `ctf-web`/`ctf-osint` turned out to be false positives from keyword-based scanning
+  that can't tell documentation from payloads), a "Med Risk" purely from declaring
+  `allowed-tools: Bash(...)` at all — with the actual command scoped to one
+  well-known CLI — reads the same way. Not independently re-verified beyond reading
+  the files directly.
+
+**Working conclusion:** both installed. Lower risk profile than any prior install in
+this log — no user-facing scripts execute, and both publishers have real
+organizational accountability (shadcn/ui, Vercel), unlike the community/single-author
+packs above.
