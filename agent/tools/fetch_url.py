@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import requests
 from langchain_core.tools import tool
 
+from agent.tools._header_repair import repair_headers
 from agent.tools._response_text import decode_response_body
 
 TIMEOUT_SECONDS = 8.0
@@ -64,44 +65,6 @@ SEARCH_TIMEOUT_SECONDS = 20.0
 SEARCH_CONTEXT_CHARS = 80
 SEARCH_MAX_MATCHES = 5
 SEARCH_MAX_PATTERN_CHARS = 200
-
-# Matches a value that is itself a whole "Header-Name: value" line -- see _repair_headers below.
-_HEADER_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9-]*):\s*(.+)$")
-
-
-def _clean_header_key(key: str) -> str:
-    """Strip whitespace and stray surrounding quote characters a model sometimes bakes into a
-    header key (e.g. "'Content-Type'" instead of "Content-Type") -- a real, observed failure
-    mode distinct from the underscore-for-hyphen one documented below: the quoted key is never
-    recognized by the server as the real header, silently breaking form/JSON parsing and
-    turning into a 400 on every POST. Docstring warnings alone haven't fully prevented header
-    mangling across model quirks, so this sanitizes defensively rather than relying only on
-    prompting."""
-    cleaned = key.strip()
-    while len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in "'\"":
-        cleaned = cleaned[1:-1].strip()
-    return cleaned
-
-
-def _repair_headers(headers: dict[str, str]) -> dict[str, str]:
-    """A third, distinct header-mangling failure mode observed live (beyond the underscore and
-    quoted-key ones _clean_header_key already handles): the whole "Header-Name: value" line ends
-    up as a header's VALUE under a throwaway key (observed: {"undefined": "Content-Type:
-    application/json"}), instead of being split into a real key/value pair. When it happens, the
-    model then typically gives up and retries with an empty headers dict instead of a corrected
-    one -- silently breaking the request rather than surfacing an error to react to. If a value
-    looks like "Name: value", re-split it and use the real name as the key; a legitimate header
-    value essentially never itself starts with "Token: rest", so this is safe to apply
-    unconditionally rather than only for a specific known-bad key."""
-    repaired: dict[str, str] = {}
-    for key, value in headers.items():
-        match = _HEADER_LINE_RE.match(value.strip()) if isinstance(value, str) else None
-        if match:
-            repaired[match.group(1)] = match.group(2)
-        else:
-            repaired[_clean_header_key(key)] = value
-    return repaired
-
 
 def _search_body(
     url: str, method: str, data: Optional[str], headers: Optional[dict[str, str]], pattern: str,
@@ -176,9 +139,12 @@ def fetch_url(
     required for POSTing a JSON body to APIs that only parse the body when that header is set,
     a common Express/express.json() pattern). Header keys must use literal hyphens exactly as
     real HTTP header names do (e.g. "X-Forwarded-For", "Content-Type") — do NOT substitute
-    underscores (e.g. "X_Forwarded_For") or wrap the key in quote characters (e.g. "'Content-Type'");
-    the server will not recognize a mangled key as the real header (stray surrounding quotes are
-    stripped defensively before sending, but don't rely on that — write the key plainly). Also
+    underscores (e.g. "X_Forwarded_For"), run words together with no separator (e.g.
+    "contentType"), or wrap the key in quote characters (e.g. "'Content-Type'"); write the key
+    plainly. For a small set of common headers (Content-Type, Cookie, Authorization,
+    User-Agent, Accept, X-Forwarded-For, etc.) a mangled key in any of these forms is corrected
+    to the real header name automatically before sending — but don't rely on this for anything
+    outside that common set, since a truly custom header's exact spelling can't be guessed. Also
     don't put the whole "Header-Name: value" line as a value under an unrelated key (e.g.
     {"undefined": "Content-Type: application/json"}) — write it as {"Content-Type":
     "application/json"}, two separate strings (this is defensively re-split if it happens, but
@@ -210,7 +176,7 @@ def fetch_url(
     if method not in {"GET", "POST"}:
         return f"Unsupported method '{method}'; use GET or POST."
 
-    clean_headers = _repair_headers(headers) if headers else None
+    clean_headers = repair_headers(headers) if headers else None
 
     requester = requests
     if session_id:

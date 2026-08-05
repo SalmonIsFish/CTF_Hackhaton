@@ -2,7 +2,7 @@
 (fetch_url, upload_file, keyed_decode) instead of each reimplementing the same fix.
 
 Not a @tool itself -- the leading underscore in the module name marks it as internal, same
-convention fetch_url.py already uses for its own private helpers (_clean_header_key etc.).
+convention agent/tools/_header_repair.py uses.
 """
 
 
