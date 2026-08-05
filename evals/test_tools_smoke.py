@@ -23,6 +23,7 @@ from agent.tools.find_flag_pattern import find_flag_pattern
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
+from agent.tools.radare2_analyze import radare2_analyze
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
 from agent.tools.tcp_session import tcp_close, tcp_open, tcp_send
@@ -799,3 +800,45 @@ print("\n=== dir_enum: unreachable target, expect a clean error string, not an e
 dir_enum_refused = dir_enum.invoke({"base_url": "http://127.0.0.1:1"})
 print(dir_enum_refused)
 assert "failed" in dir_enum_refused.lower(), f"expected a clean failure message, got: {dir_enum_refused}"
+
+print(
+    "\n=== radare2_analyze: real end-to-end run against a real ELF (/bin/true, pulled live "
+    "through WSL) -- not a mock, exercises the actual wsl.exe/rabin2/r2 bridge ==="
+)
+import base64 as _b64  # local import: only this test block needs it
+import subprocess as _subprocess
+
+_r2_test_bin = _subprocess.run(
+    ["wsl.exe", "-e", "cat", "/bin/true"], capture_output=True, timeout=10
+).stdout
+assert _r2_test_bin, "expected /bin/true to actually produce bytes via WSL -- is WSL installed?"
+_r2_b64 = _b64.b64encode(_r2_test_bin).decode()
+
+r2_info = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "info"})
+print(r2_info)
+assert "elf" in r2_info.lower(), f"expected ELF file info from rabin2 -I, got: {r2_info}"
+
+print("\n=== radare2_analyze: strings mode ===")
+r2_strings = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "strings"})
+print(r2_strings)
+assert "<untrusted_data" in r2_strings, "expected the result wrapped in <untrusted_data> tags"
+
+print("\n=== radare2_analyze: unknown mode is rejected with a clear error, not a crash ===")
+r2_bad_mode = radare2_analyze.invoke({"content_b64": _r2_b64, "mode": "delete_everything"})
+print(r2_bad_mode)
+assert "Unknown mode" in r2_bad_mode, f"expected an unknown-mode error, got: {r2_bad_mode}"
+
+print("\n=== radare2_analyze: invalid base64 is rejected with a clear error, not a crash ===")
+r2_bad_b64 = radare2_analyze.invoke({"content_b64": "not valid base64!!!", "mode": "info"})
+print(r2_bad_b64)
+assert "not valid base64" in r2_bad_b64, f"expected a base64 error, got: {r2_bad_b64}"
+
+print(
+    "\n=== radare2_analyze: a symbol value shaped like a shell/r2-command injection attempt "
+    "is rejected, not passed through to the -c command string ==="
+)
+r2_injection = radare2_analyze.invoke(
+    {"content_b64": _r2_b64, "mode": "disasm", "symbol": "main; !rm -rf /"}
+)
+print(r2_injection)
+assert "Invalid symbol" in r2_injection, f"expected the injection attempt rejected, got: {r2_injection}"
