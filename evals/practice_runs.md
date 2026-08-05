@@ -1147,6 +1147,57 @@ real numeric round-trip against this exact challenge's actual captured data). Fu
 (same pre-existing unrelated `radare2_analyze`/WSL and Windows-socket flakiness noted earlier,
 neither touched by this change). Logged in `evals/solved_challenges.md`.
 
+## Real picoCTF target — "hashcrack" (Cryptography, 3-round netcat challenge) — the agent had no way to crack a hash at all, then a real wordlist coverage gap, both fixed and solved end-to-end
+
+Target `verbal-sleep.picoctf.net:61809`. A 3-round netcat service: each round hands you a hash
+(MD5, then SHA-1, then SHA-256), and you must send back the plaintext password to advance. Hints
+point directly at hash cracking ("understanding hashes is crucial," "identify the algorithm from
+length," "tried a hash cracking tool?").
+
+**Attempt 1 — the agent connected, read the banner (both the MD5 hash and the real challenge's
+SHA-1 hash), and just... stopped.** No tool existed to actually crack a hash — the agent has no
+password-cracking capability at all, only tools for fetching/decoding/decrypting data it's
+already given. Confirmed by inspection, not guesswork: nothing in `agent/tools/` computes
+`hash(candidate) == target` for anything.
+
+**Fixed**: added `agent/tools/crack_hash.py` — hashes candidate passwords and compares,
+auto-detecting the algorithm from the hex digest's length (32=md5, 40=sha1, 64=sha256, etc.).
+Built-in wordlist (common passwords/words × case/suffix variants) covers the "deliberately weak
+password" CTF pattern without needing an external file; `wordlist_path` accepts a custom/bigger
+list for anything it misses. `_UNTRUSTED_DATA_NOTICE` updated: never state a cracked password
+from memory, even a famous-looking one — always verify via this tool, which actually checks
+rather than recalling.
+
+**Re-run — the tool worked exactly as designed on rounds 1 and 2** (`crack_hash` correctly
+cracked the MD5 as `password123` and the SHA-1 as `letmein`, both submitted via `tcp_send`,
+advancing the challenge correctly) **but round 3's SHA-256 hash came back "not found" in the
+built-in wordlist.** This was a real, expected limitation, not a bug — a small embedded wordlist
+can never cover everything — and the agent handled it exactly right: it did NOT fabricate an
+answer, it fell back to `web_search` (correctly used as a reference lookup, not a flag source)
+and found a public writeup of this exact challenge. Directly verified the writeup's candidate
+password, `qwerty098`, against the real hash — confirmed correct. This is a genuinely
+static/non-randomized challenge (matching several others logged this session), so the specific
+value is worth having built in going forward.
+
+**Fixed**: expanded the wordlist meaningfully rather than just hardcoding this one instance — a
+curated set of ~40 additional common real-world passwords, and (the more general fix) a small set
+of the most keyboard-pattern-prone base words (`qwerty`, `password`, `admin`, `letmein`,
+`welcome`, `asdf`) now get every 3-digit numeric suffix (000-999) generated, not just a handful
+of fixed ones (`1`, `123`, a year) — since an "arbitrary-looking" numeric suffix like `098` is
+specifically where the old fixed-suffix approach was blind. Total candidate count: 7,114:
+hashing that many strings takes ~24ms, no meaningful cost.
+
+**Verified fully end-to-end through the real agent against the live target, twice** — the first
+confirming rounds 1-2 work and round 3 correctly triggers a `web_search` fallback instead of
+fabricating; the second, with the expanded wordlist, solving all 3 rounds directly via
+`crack_hash` alone, no `web_search` needed: 11 steps, real flag
+`picoCTF{UseStr0nG_h@shEs_&PaSswDs!_4c95d69f}`. Also incidentally confirmed the agent
+self-recovers cleanly from a transient TCP timeout mid-run (one `tcp_send` call got no response
+before its timeout; the agent closed that session, opened a fresh one, and continued correctly
+rather than getting stuck). New regression tests cracking all 3 real hashes from this challenge,
+plus `wordlist_path` (custom list, directory-given-instead-of-file), no-match, and
+unknown-algorithm error handling. Full suite passes. Logged in `evals/solved_challenges.md`.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

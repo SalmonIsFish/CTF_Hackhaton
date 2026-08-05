@@ -33,6 +33,7 @@ from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import radare2_analyze
 from agent.tools.read_local_file import read_local_file
 from agent.tools.rsa_tools import extract_hidden_key, rsa_decrypt_file
+from agent.tools.crack_hash import crack_hash
 from agent.tools._local_file_check import check_local_file
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
@@ -453,6 +454,68 @@ bad_hex_result = dh_shared_secret_decrypt.invoke({
 })
 print(bad_hex_result)
 assert "not valid hex" in bad_hex_result, f"expected a clean invalid-hex message, got {bad_hex_result}"
+
+print(
+    "\n=== crack_hash: cracks all 3 real hashes from a live picoCTF 'hashcrack' run "
+    "(MD5, SHA-1, SHA-256), auto-detecting algorithm from hex length -- regression test for a "
+    "real, confirmed run where the agent had no way to crack a hash at all and just read the "
+    "banner without attempting a password ==="
+)
+md5_result = crack_hash.invoke({"target_hash": "482c811da5d5b4bc6d497ffa98491e38"})
+print(md5_result)
+assert md5_result == "Cracked (md5): password123", f"expected the real MD5 crack, got {md5_result}"
+
+sha1_result = crack_hash.invoke({"target_hash": "b7a875fc1ea228b9061041b7cec4bd3c52ab3ce3"})
+print(sha1_result)
+assert sha1_result == "Cracked (sha1): letmein", f"expected the real SHA-1 crack, got {sha1_result}"
+
+print(
+    "\n=== crack_hash: cracks a password needing a full 3-digit numeric suffix (qwerty098), not "
+    "just the small fixed suffix set (1/123/year) -- regression test for a real, confirmed miss: "
+    "the built-in wordlist first reported this SHA-256 hash 'not found', forcing a web_search "
+    "detour to locate the password from a public writeup instead of cracking it directly ==="
+)
+sha256_result = crack_hash.invoke({
+    "target_hash": "916e8c4f79b25028c9e467f1eb8eee6d6bbdff965f9928310ad30a8d88697745",
+})
+print(sha256_result)
+assert sha256_result == "Cracked (sha256): qwerty098", f"expected the real SHA-256 crack, got {sha256_result}"
+
+print("\n=== crack_hash: a hash with no match in the built-in wordlist is a clean message, not a crash ===")
+no_match_result = crack_hash.invoke({"target_hash": "a" * 64})
+print(no_match_result)
+assert no_match_result.startswith("Not found in "), f"expected a clean no-match message, got {no_match_result}"
+
+print("\n=== crack_hash: an unrecognized hash length can't auto-detect, expect a clean error ===")
+bad_length_result = crack_hash.invoke({"target_hash": "abc123"})
+print(bad_length_result)
+assert "Could not auto-detect" in bad_length_result, f"expected a clean auto-detect failure, got {bad_length_result}"
+
+print("\n=== crack_hash: an unknown explicit algorithm is a clean error, not an exception ===")
+bad_algo_result = crack_hash.invoke({"target_hash": "abc123", "algorithm": "not_a_real_algo"})
+print(bad_algo_result)
+assert "Unknown hash algorithm" in bad_algo_result, f"expected a clean unknown-algorithm message, got {bad_algo_result}"
+
+print("\n=== crack_hash: wordlist_path lets a custom/bigger list be used instead of the built-in one ===")
+with _tempfile.TemporaryDirectory() as _tmpdir_wordlist:
+    wordlist_file = f"{_tmpdir_wordlist}/custom.txt"
+    with open(wordlist_file, "w") as f:
+        f.write("not_the_one\nsuper_obscure_password_42\nalso_not_it\n")
+    import hashlib as _hashlib  # local import, avoids polluting module namespace above
+
+    custom_target = _hashlib.md5(b"super_obscure_password_42").hexdigest()
+    custom_result = crack_hash.invoke({"target_hash": custom_target, "wordlist_path": wordlist_file})
+    print(custom_result)
+    assert custom_result == "Cracked (md5): super_obscure_password_42", (
+        f"expected the custom wordlist entry to be found, got {custom_result}"
+    )
+
+    print("\n=== crack_hash: wordlist_path pointing at a directory lists its contents, same as other local-file tools ===")
+    wordlist_dir_result = crack_hash.invoke({"target_hash": custom_target, "wordlist_path": _tmpdir_wordlist})
+    print(wordlist_dir_result)
+    assert "is a directory, not a file" in wordlist_dir_result, (
+        f"expected the directory case to be handled the same as other local-file tools, got {wordlist_dir_result}"
+    )
 
 print(
     "\n=== build_system_prompt: priority-order guardrail present -- regression test for a real, "

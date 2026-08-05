@@ -45,6 +45,7 @@ from agent.tools.find_flag_pattern import (
 )
 from agent.tools.identify_and_decode import identify_and_decode
 from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
+from agent.tools.crack_hash import crack_hash
 from agent.tools.math_tools import dh_shared_secret_decrypt, modpow
 from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import radare2_analyze
@@ -309,8 +310,8 @@ _UNTRUSTED_DATA_NOTICE = (
     "tcp_open/tcp_send, port_scan, fetch_and_decode_cipher, fetch_and_join_fragments) reaching "
     "the challenge's own host, OR a LOCAL-FILE tool (extract_metadata, read_local_file, "
     "identify_and_decode, keyed_byte_decode, extract_hidden_key, rsa_decrypt_file, modpow, "
-    "dh_shared_secret_decrypt, radare2_analyze) actually reading the challenge's own downloaded "
-    "file(s). This applies "
+    "dh_shared_secret_decrypt, crack_hash, radare2_analyze) actually reading the challenge's own "
+    "downloaded file(s) or performing a real computation on its own captured data. This applies "
     "EQUALLY to offline/local-file challenges (crypto, forensics, reverse engineering) as it "
     "does to live web targets — the absence of a URL does not relax this rule, and describing a "
     "correct-sounding recipe ('inspect the metadata, decode the hex, decrypt with the key') is "
@@ -335,7 +336,11 @@ _UNTRUSTED_DATA_NOTICE = (
     "correctly by reasoning through it, only by actually running the computation. If you find "
     "yourself about to write out a code block in your final answer 'showing' a calculation "
     "instead of having already called a tool that performed it, stop — that code block was never "
-    "executed, and any flag it 'produces' is fabricated. Before answering ANY challenge, offline "
+    "executed, and any flag it 'produces' is fabricated. The same applies to 'crack this hash' "
+    "challenges — never state a password for a hash from memory/training data, even one that "
+    "looks like a famous example; use crack_hash (hashes real candidate passwords and compares, "
+    "auto-detecting the algorithm from the hex length) instead, which actually checks rather "
+    "than recalling. Before answering ANY challenge, offline "
     "or online, check the "
     "tool-call history for THIS run: if no tool actually touched the challenge's own file/target "
     "and returned the flag verbatim, you have not solved it yet, no matter how standard or "
@@ -415,6 +420,7 @@ TOOLS = [
     rsa_decrypt_file,
     modpow,
     dh_shared_secret_decrypt,
+    crack_hash,
     search_vault,
     search_skills,
     web_search,
