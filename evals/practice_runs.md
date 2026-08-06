@@ -1641,3 +1641,107 @@ either an organizer hint or a teammate finding something from an adjacent challe
 blind fuzzing of a live scored target has poor payoff at this point and mild etiquette cost.
 Revisit only if new information surfaces (a hint drop, another team's partial progress, or a
 teammate solving an adjacent challenge that turns out to share infrastructure/technique).
+
+## Real hackathon-organizer target — "Pony Express Dispatch" (Web, SSTI → CVE-2026-33937 AST injection RCE) — flag captured by hand via curl, agent not yet tried
+
+Target `52.76.96.108:3013` (UCSI26 hackathon-organizer challenge). Flag captured:
+**`UCSI26{cve-2026-33937_h4ndl3b4rs_4st_1nj3ct10n}`**.
+
+**App shape**: `POST /api/templates/preview` (`{template, context}`) renders a user-supplied
+Handlebars template server-side against a user-supplied JSON context and returns the plain-text
+result; `GET /api/templates/:name` returns the raw (unrendered) content of one of 3 fixed "stock"
+templates (`welcome.txt`, `dispatch.txt`, `invoice.txt`); `GET /api/templates` lists those names.
+No auth, no other routes.
+
+**Long, mostly-dead-end investigation of the "obvious" attack first — worth recording since it
+conclusively rules out the classic technique for any future Handlebars target on a modern
+version.** Confirmed via `#with`/`as |x|` block-param syntax, `{{#each}}`, `{{lookup}}`, and
+triple-stash raw output that the engine is genuinely `handlebars` (not a lookalike). Then spent a
+large number of requests confirming this specific install has **fully intact, current
+prototype-access hardening** (`allowProtoPropertiesByDefault`/`allowProtoMethodsByDefault`,
+default false since Handlebars 4.6/4.7): systematically tested every common `Array.prototype`/
+`String.prototype`/`Object.prototype` method (`push`, `pop`, `split`, `constructor`, `toString`,
+`valueOf`, `apply`, `call`, `bind`, 40+ names total) reachable from a bound string/array/object —
+**every single one** resolved to falsy/empty, while the exact same names as **own** properties on
+our own JSON context (`{"constructor": {...}}`) resolved fine. This directly disproves the
+"inherited vs own property" gate could be bypassed with any known public gadget-chain payload
+(the classic `{{#with "s" as |string|}}...string.sub.constructor...{{/with}}` chain never even
+enters its own nested `#with` blocks, confirmed by isolating the exact fork point: `{{#with "e"}}
+{{#if split}}TRUTHY{{else}}FALSY{{/if}}{{/with}}` printed `FALSY` — `.split` is undefined the
+instant it's touched). Also ruled out: custom helpers (~30 plausible names tried, none registered),
+partials (`{{> name}}` for every stock filename and traversal variant, all "missing partial"),
+real prototype pollution (`context: {"__proto__": {...}}` via JSON body — safe, JSON.parse creates
+a literal own key, doesn't touch `Object.prototype`; confirmed with a cross-request persistence
+test), a form-urlencoded/`qs`-bracket-notation pollution attempt (route only accepts JSON body, so
+moot), and a hidden default-context field carrying the flag (`{{#each @root}}` on empty context
+enumerates nothing beyond what we send — no server-injected defaults exist at all).
+
+**One real, separate bug found and noted but not the path to the flag**: `GET
+/api/templates/:name` is backed by a **plain JS object used as a name→content map with no
+`hasOwnProperty` guard** — requesting `constructor`, `toString`, `hasOwnProperty`, `valueOf`,
+`__proto__`, or `__defineGetter__` as the `:name` all crash the route (500, or once a full
+connection-drop/HTTP-000 for `constructor` specifically, suggesting a real uncaught exception
+mid-request rather than a clean catch). Classic "object-as-map without `Object.prototype.hasOwnProperty.call()`"
+mistake — but since the map only ever holds function references (real prototype methods, not
+attacker-chosen strings) and there's no template-creation endpoint to *write* a `__proto__` key via
+real bracket-assignment (only 3 read-only GET/HEAD routes exist), this bug can crash the route but
+can't be turned into a read primitive. Worth a `ctf-web`/general code-review note regardless: this
+pattern (`registry[userInput]` on a plain `{}`) is worth grepping for on sight in any Node app
+review, independent of whether a specific challenge happens to make it exploitable.
+
+**The actual bug, found via a web search once the gadget-chain route was conclusively dead**:
+recalled that Handlebars has a documented type-confusion issue — `Handlebars.compile()` accepts
+either a template *string* or a **pre-parsed AST object**, and skips the parse step entirely for
+the latter. This is tracked as **CVE-2026-33937** (CVSS 9.8, Handlebars 4.0.0–4.7.8, fixed in
+4.7.9): the compiler's `NumberLiteral` visitor (`this.pushStackLiteral(number.value)`) inserts a
+node's `value` field **directly into the generated JavaScript source with no sanitization or type
+check** — so if `value` is a string containing arbitrary code instead of a real number, that code
+lands verbatim in the compiled render function. Since our `template` field is JSON, sending a JSON
+**object** instead of a **string** for it reaches this path if the app passes `req.body.template`
+straight into `Handlebars.compile()` — exactly what "the preview quill will happily draft whatever
+you hand it" was hinting at. Confirmed reachable with a trivial `{"type":"Program","body":[],...}`
+AST rendering successfully (200, empty output) — proof the app does zero type-checking on
+`template` before compiling it.
+
+**Getting a working payload took real iteration, not a drop-in public PoC**: the widely-circulated
+PoC (`lookup(this, <NumberLiteral value containing "{},{})) + process.getBuiltinModule(...)... //">`)
+relies on knowing the *exact* surrounding generated-code shape (how many closing braces/parens
+precede the injection point) to "close everything, append `+ payload`, comment out the rest" —
+that exact closing sequence is specific to the PoC author's Handlebars minor version/codegen and
+didn't match this target (every attempt round-tripped to the generic `{"error":"render_failed"}`,
+indistinguishable from a real syntax error). Also hit and fixed a separate, unrelated schema gap:
+my first several AST attempts (a `MustacheStatement` missing a `"hash"` field entirely) failed
+identically whether the AST was well-formed or garbage — isolated by testing an intentionally
+*minimal but complete* `{{name}}`-equivalent AST, which revealed `"hash": null` is required even
+though it's semantically empty. Once schema was correct, found the **injection point works fine
+as a plain function-call argument** (`(function(){...})()` slots in as a syntactically valid
+expression with no closing-sequence gymnastics needed — much more version-portable than the public
+PoC's brace-counting approach) — but its *return value* was silently swallowed, because it was
+sitting inside `lookup(this, <injected>)`'s second argument (the *property key*, not the *object*),
+so the result of the injected code became a lookup key into an unrelated empty context, discarding
+it. Fixed by moving the injection to the **first** argument instead — `lookup(<injected IIFE
+returning {result: ...}>, "result")` — since Handlebars' `lookup` helper itself performs a safe,
+`hasOwnProperty`-gated read, and `result` is a genuine **own** property of the object our own
+injected code just constructed, it passes the untouched safety check and the value propagates
+straight through to the printed output.
+
+**Confirmed real code execution and read the flag**: `process.version` → `v20.20.2`; `typeof
+require` → `undefined` (confirms compiled AST-injected code runs with no module closure, hence
+needing `process.getBuiltinModule('child_process')` rather than `require('child_process')`, same
+reasoning the public PoC used); `execSync('cat /flag')` → `Is a directory` (a real, informative
+error surfaced cleanly by wrapping the injected code in its own try/catch and returning
+`e.message` — much faster than guessing); `execSync('ls -la /flag')` → showed `flag.txt` inside;
+`execSync('cat /flag/flag.txt')` → the real flag.
+
+**Not yet done**: re-running this through the actual agent loop. This would need at least two new
+capabilities beyond anything in `agent/tools/` today: (1) a way to send a JSON **object** (not a
+string) as a tool argument value for `fetch_url`'s POST body — today's `fetch_url` always
+JSON-encodes a flat args dict, doesn't obviously support "this field should be a nested raw JSON
+object, not a string" the way this exploit needs for `template`; (2) far more importantly, nothing
+in `search_skills`/the system prompt would point the model at "check whether this specific
+template-engine version has a recent AST-input CVE" as a fallback once the standard SSTI gadget
+chain fails — this really did require a live web search mid-investigation, not local knowledge,
+since the CVE is dated within the current year. Worth a `ctf-web` skill-pack note: when a
+Handlebars (or any AST-accepting template engine) target resists every standard gadget-chain
+payload, check `web_search` for engine-version-specific *recent* CVEs before concluding the target
+is unexploitable — don't stop at "sandbox looks hardened."
