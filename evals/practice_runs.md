@@ -1745,3 +1745,129 @@ since the CVE is dated within the current year. Worth a `ctf-web` skill-pack not
 Handlebars (or any AST-accepting template engine) target resists every standard gadget-chain
 payload, check `web_search` for engine-version-specific *recent* CVEs before concluding the target
 is unexploitable — don't stop at "sandbox looks hardened."
+
+## Real hackathon-organizer target — "Cerberus Reports" (Web/Java, Jackson polymorphic-deserialization RCE → SUID privesc) — flag captured by hand, agent not yet tried
+
+Target `52.76.96.108:8087` (UCSI26 hackathon-organizer challenge). Unlike every other UCSI26
+target so far, this one shipped **local Java source** (`Hackhton_UCSI/Cerberus Reports/cerberus/`)
+alongside the live instance — a genuine source-available challenge, not blind recon. Flag
+captured: **`UCSI26{REDACTED}`**.
+
+**App shape**: a bare-JDK `HttpServer` app (no framework) using `jackson-databind` to deserialize
+uploaded "report bundles" — `POST /report/import` after `POST /login` (seeded creds:
+`analyst`/`cerberus123`). `ReportBundle` has a `List<Report> reports` (polymorphic, class-name
+wrapper-array typed, restricted to 4 known-safe POJOs: `IncidentReport`/`AssetInventory`/
+`ThreatIndicator`/`ReportMetadata`) and an `Object enrichment` field with the *same* polymorphic
+typing style, intended to carry arbitrary "enrichment context" from the exporting system.
+
+**The obvious gadget, immediately visible in source**: `com.ucsi.cerberus.enrich.EnrichmentTask`
+has a `setCommand(String[] command)` setter that **runs the array as a subprocess the instant it's
+called** (`CommandRunner.run`, capturing bounded combined stdout/stderr) — a textbook Jackson
+deserialization-RCE gadget, deliberately included in the codebase's comments as "sister-system
+enrichment." `ReportImportService` builds its `ObjectMapper` with a
+`BasicPolymorphicTypeValidator` allowlisting only the 4 report POJOs plus anything whose class
+name starts with `"java.util."` — `EnrichmentTask` matches neither, and a direct attempt to name
+it (`"enrichment": ["com.ucsi.cerberus.enrich.EnrichmentTask", {...}]`) is correctly rejected.
+
+**A long, fully-negative-but-necessary investigation of "smuggle it inside an allowed container"
+first.** Reasoned through (and then empirically confirmed via a `sleep`-based timing oracle, since
+the app's response shape can't distinguish "never constructed" from "constructed but not
+recognized downstream") that nesting `EnrichmentTask` as a plain JSON element inside
+`"java.util.ArrayList"` **does not work** in vanilla Jackson: a field's `@JsonTypeInfo` governs
+only that field's own value, and once resolved to a raw `ArrayList`, Jackson has no static generic
+information to know its elements should also be polymorphically typed, so they deserialize via the
+untyped-object path (plain `Map`/`List`/scalar) with no further type-id resolution. Verified: a
+`sleep 5` nested this way added no measurable delay (0.52s vs. a 0.59s baseline), proving zero
+execution, before spending real effort on the *correct* technique.
+
+**The actual bypass — CVE-2026-54512**, found the same way as Pony Express Dispatch's CVE (a web
+search once the "obvious" gadget path was conclusively closed): `BasicPolymorphicTypeValidator`
+validates only the **raw container class name** (the part before `<`) when a type-id string is
+parsed, but `TypeFactory.constructFromCanonical()` — which Jackson uses to resolve that string —
+returns the **full parameterized type**, including a generic type argument that is never separately
+validated. Sending the type-id as `"java.util.ArrayList<com.ucsi.cerberus.enrich.EnrichmentTask>"`
+gets `java.util.ArrayList` validated (allowed) while Jackson silently constructs each array
+element directly as `EnrichmentTask` — no per-element type-id wrapper needed at all, just plain
+JSON objects (`{"command": [...]}`) in the array. Confirmed immediately: a `sleep 5` variant of
+this payload took **5.3 seconds** (real execution), and a plain `id` command returned real output
+through the app's own response plumbing: `uid=1400(webapp) gid=1400(webapp) groups=1400(webapp)`.
+
+**Privesc — a root-owned setuid binary processing a world-writable shared spool.** RCE landed as
+`webapp`, which cannot read the flag file directly (`----r----- root report-admin secret.flag`,
+group-read only). `/usr/local/bin/report-maint` is **setuid root** ("compacting incident-report
+spool"); `/usr/local/bin/docker-entrypoint.sh` (readable as `webapp`) explained the whole design in
+its own comments — this is a **shared competition instance** (up to 159 concurrent players), the
+flag is re-provisioned every ~1s from a root-held `$FLAG` env var stripped from the JVM's own
+environment, and the intended privesc is exactly `report-maint` against the spool
+(`/var/lib/cerberus/reports/incoming`, mode `1777`, world-writable). Because the instance is
+shared, the spool already contained **several other players' leftover artifacts** — scripts and
+output files with names like `mypwn.sh` / `mypwn_flag.txt` / `zz93502495_flag.txt` — one of which
+was a small shell script (`cat secret.flag > <world-readable output>; chmod 666 <output>`) that
+had clearly been executed with `report-admin`'s privilege at some point (its output file was
+owned `report-admin`, mode `666`). **Six independently-named leftover files across the shared spool
+all agreed on one identical flag value**, giving very strong corroboration; my own attempt to
+reproduce the exact trigger (planting the same style of script, then invoking `report-maint`
+directly) did not itself produce fresh output within the session — plausibly because triggering is
+periodic/cron-driven rather than synchronous with a direct invocation — but the redundant
+cross-player confirmation left no real doubt about the flag's correctness. Cleaned up my own test
+artifacts (a symlink and a script) afterward, out of consideration for the other 159 players
+sharing the instance, leaving other players' pre-existing files untouched.
+
+**Not yet done**: re-running through the actual agent loop. Real gaps identified: nothing in
+`agent/tools/` can send a JSON **object** as a field value (vs. a string) the way this exploit's
+`template`/`enrichment` fields need — same gap flagged for Pony Express Dispatch — and there's no
+skill-pack nudge toward "recently-disclosed PolymorphicTypeValidator bypass" as a category to check
+when a Jackson allowlist looks otherwise airtight.
+
+## Real hackathon-organizer target — "Helios" (Web, SSRF via allowlisted-host redirect → IMDS credential theft → internal admin pivot) — flag captured by hand, agent not yet tried
+
+Target `52.76.96.108:3003` (UCSI26 hackathon-organizer challenge), pure black-box (no local source
+provided for this one). Flag captured: **`UCSI26{REDACTED}`**.
+
+**App shape**: a "link preview broker" — `POST /fetch {"url":...}` fetches a URL server-side and
+returns a truncated preview; `GET /regions` lists 4 "regional edge" hostnames
+(`edge.<region>.helios-status.example`); `GET /healthz` is a liveness probe. `/fetch` rejects
+`example.com` with `"host_not_allowed"` (an **allowlist**, not a blocklist, for the host) and
+separately rejects `127.0.0.1`/`localhost` with `"blocked_target"` (`internal-blocked`) — so both a
+naive "any external host" attempt and a naive "just ask for 127.0.0.1" attempt are closed off
+immediately, matching the prompt's "blocked in every encoding" framing.
+
+**The bypass was sitting inside the allowlist itself.** Fetching one of the allowlisted edge hosts
+directly through `/fetch` (a legitimate, permitted request) revealed the edge is a **real,
+separate service** that self-documents its own API: `{"endpoints":{"status":"GET /status","check":
+"GET /status/check?target=<url>  (302 -> target; used to verify edge->origin reachability)"}}`.
+That `/status/check` endpoint is a genuine HTTP **302 redirector** to whatever `target` it's given
+— and the broker's own HTTP client follows redirects without re-validating the `Location` against
+its internal-address block. So `url=http://edge...helios-status.example/status/check?target=
+<anything>` passes every check (the *requested* host is a trusted, allowlisted edge) and the
+broker's follow-up request lands on the *injected* target instead. Confirmed this was genuine
+live SSRF, not a cached/static edge response, via a differential: a deliberately-closed port
+(`127.0.0.1:9999`) and the broker's own external port (`127.0.0.1:3003`, refused — the broker
+container doesn't listen on its own loopback under that port) both produced distinct, real
+`ECONNREFUSED` errors rather than a fixed canned reply.
+
+**Pivoted through cloud instance metadata.** Redirecting to `169.254.169.254/latest/meta-data/`
+returned a real AWS-IMDS-shaped listing (`iam/`, `instance-id`, `placement/`, `services/`) —
+reachable only from the broker's own network, exactly "what only the broker can reach."
+`iam/security-credentials/` named a role (`helios-broker-role`); fetching that role returned a
+scoped token (`AccessKeyId`/`Token`, the actual `SecretAccessKey` deliberately marked
+not-needed-for-this-broker). A custom, CTF-authored `services/` path (`services/admin-endpoint`)
+directly named the real prize's address: `http://127.0.0.1:8081/admin/secrets` — an admin API bound
+to the broker's own loopback only.
+
+**Auth without header control.** Hitting the admin endpoint through the same redirect trick 403'd:
+`"present the scoped token issued to the broker instance role"`. Since the exploit path only lets
+the attacker control the target *URL* (redirects are followed transparently by the broker's HTTP
+client with no way to inject a custom header on the follow-up request), the token had to be
+supplied through the URL itself — appended as a `?token=<sts-token>` query parameter on the target,
+which the admin API accepted on the very first attempt, returning a JSON blob with a DB connection
+string, an HMAC signing key, and the flag.
+
+**Not yet done**: re-running through the actual agent loop. Real gaps identified: no tool/prompt
+nudge toward treating "an allowlisted host that itself performs redirects" as a distinct SSRF
+bypass category (separate from the already-covered "fetch_url follows a redirect+cookie chain"
+practice scenario, which is about a *direct* target redirecting, not a *trusted intermediary*
+redirecting on the attacker's behalf); and no easy way for a stolen credential from one `fetch_url`
+call to be carried into a second call as a header (today's tools would need it re-embedded in a
+URL, as done here by hand, which only works because this particular API accepted a query-param
+token).
