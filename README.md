@@ -1,10 +1,13 @@
-# CTF Hackathon Agent
+# CTF Hackathon Agent — Team Gamabunta
 
 An autonomous CTF-solving agent (`LLM + Tools + Loop + Context`) built on LangGraph, paired with
 a Next.js dashboard for driving and watching it work. Given a challenge prompt (and optionally a
 live `host:port`), it triages the category, reasons over a bounded tool-use loop, grounds itself
 in a local vault + 14 vetted CTF technique packs before falling back to general knowledge, and
 returns a flag (or its best answer) with a full tool-call trace.
+
+**Hackathon judges:** see [`SUBMISSION.md`](./SUBMISSION.md) for the submission checklist
+(team name, tech stack) and [`WRITEUP.md`](./WRITEUP.md) for the full architecture/design writeup.
 
 ## Architecture at a glance
 
