@@ -1871,3 +1871,107 @@ redirecting on the attacker's behalf); and no easy way for a stolen credential f
 call to be carried into a second call as a header (today's tools would need it re-embedded in a
 URL, as done here by hand, which only works because this particular API accepted a query-param
 token).
+
+## Real hackathon-organizer target — "Vault" (Web, blind SQLi past a talkative WAF) — solved by hand via a scripted binary-search extraction, not through the agent loop
+
+Target `http://52.76.96.108:3009` (UCSI26 hackathon organizer challenge). Challenge description:
+"Vault is a document store. Its public-document lookup checks whether an id exists, and a query
+firewall sits in front of it. Registered users can query. The most valuable record isn't a
+document at all — it lives where only the firewall's blind spots can reach." Flag captured
+(redacted per organizer rules — see repo-wide redaction policy, commit `e020426`):
+**`UCSI26{REDACTED}`**.
+
+**App shape**: three endpoints — `POST /register`, `POST /login` (returns a `session` cookie +
+token), `GET /api/doc?id=<n>` (auth-gated, returns `{"found": true/false}` — a pure existence
+oracle, exactly as the description promises). `Server: Vault/1.0 Python/3.11.2`.
+
+**The WAF is unusually talkative**, which made mapping it fast instead of blind: instead of a
+generic 403/block page, a rejected `id` value returns `{"error": "blocked by query firewall",
+"classification": "waf-block", "blocked": "<reason>"}`, naming exactly what tripped it. Sending
+one character/token at a time (`'`, a space, `--`, `/* */`, `;`) mapped the full ruleset in five
+requests: blocks quotes, whitespace, line-comments, block-comments, and semicolons. Nothing else
+was blocked — `(`, `)`, `=`, `<`, `>`, `+`, bare `UNION`/`SELECT`/`OR`/`AND` keywords, `%00`,
+`||`, `&&` all passed straight through.
+
+**Confirming real SQLi, not just permissive parsing**: `id=1+1` returned `{"found": true}` — `1+1`
+evaluates to `2` server-side (a known-existing id), proving the value is reaching a live SQL
+arithmetic context, not just a literal string match. `id=(1)OR(1=1)` (always true) and
+`id=(2)AND(1=2)` (always false, despite `id=2` existing on its own) confirmed full boolean control
+over the query, all without a single space, quote, comment, or semicolon — see
+`vault/techniques/web/whitespace-free-waf-bypass-blind-sqli.md` for the general bypass technique
+(parentheses substitute for whitespace as token delimiters; SQLite's `char(<codepoints>)` builds
+string literals with zero quote characters; the query had nothing trailing the injected value, so
+comment-stripping was never actually needed).
+
+**Extraction**: confirmed SQLite via `sqlite_master` (present) vs. `information_schema.tables`
+(absent — rules out MySQL/Postgres). Wrote a small Python script
+(`urllib` + a boolean `oracle()` function) implementing binary-search extraction —
+`length(<expr>)` first, then `unicode(substr(<expr>,i,1))<=mid` per character, ~8 requests per
+character instead of a full linear ASCII scan. Enumerated `sqlite_master` for table names: three
+tables existed — `users`, `documents`, `secrets`. `secrets` (never referenced by any documented
+endpoint — the app only ever talks about "documents") matched the description's "most valuable
+record isn't a document at all" line directly. Pulled its schema from `sqlite_master.sql`
+(`CREATE TABLE secrets (name TEXT PRIMARY KEY, value TEXT)`, one row), then extracted
+`name='flag'`, `value='UCSI26{REDACTED}'` the same character-by-character way.
+
+**Hit one transient issue**: a single `URLError: timed out` mid-extraction (real network blip,
+not WAF-related) killed the first run partway through a `length()` scan. Fixed by wrapping the
+request helper in a small retry-with-backoff loop; the rerun completed cleanly with no further
+interruptions.
+
+**Not yet done**: re-running through the actual agent loop. Real gap identified: no tool
+currently implements binary-search blind-oracle extraction as a reusable primitive — this session
+wrote a one-off script from scratch, the same shape of gap already flagged for the Saturn Exchange
+(concurrent-request) and StaffDesk (GraphQL introspection reflex) write-ups above. A generic
+"blind_boolean_extract(oracle_url_template, condition_placeholder)" tool would directly cover this
+challenge and any future boolean-oracle SQLi/NoSQLi target without a fresh script each time.
+
+## Hackathon organizer target — "ModelHub" (Binary exploitation-flavored Web, port 3015) — investigated, not solved; paused per user request
+
+Target `http://52.76.96.108:3015` (UCSI26 hackathon organizer challenge, Gunicorn/Python). Prompt
+hint given: "Remember OpenAI x Hugging Face attack, but better" — a reference to the real 2026
+OpenAI-vs-Hugging-Face incident (a frontier model exploiting, among other things, unsafe
+deserialization paths in Hugging Face's dataset tooling). **Not solved** — recorded here so a
+future session doesn't repeat the same dead-end payload attempts from scratch.
+
+**App shape**: `GET /` (after an unusually slow ~90s cold-start response) returns `ModelHub
+inference API. POST /upload {"data": <base64 pickle blob>} then POST /infer {"id": ...}` — an
+explicit invitation to a pickle-deserialization RCE, the same real vulnerability class behind
+Hugging Face's actual SFConvertbot/malicious-model incidents. `GET /upload`/`GET /infer` both
+return `405` confirming the routes exist; unrecognized routes intermittently returned either a
+clean `404` or a dropped connection depending on server load (a single-worker Gunicorn process
+appears to queue/serialize requests under load, not evidence of anything challenge-specific).
+
+**Confirmed dead ends, all verified directly**:
+- `POST /upload` with **any** valid-base64 payload — a benign pickled string, dict, list, int, a
+  crafted `__reduce__`-based RCE object, raw non-pickle garbage bytes, pickle at protocols 0/1/2,
+  and a proper `torch.save()` container in both legacy (pre-1.6 pickle-tuple) and modern
+  (zip-container) formats — returns an **identical, instant (~0.1-0.3s) generic Flask 500 page**
+  with zero variation in status, timing, or body across all of them.
+- Explicitly caught, distinct error paths **do** exist for some inputs (`{"error":
+  "bad_base64"}` for invalid base64, `{"error": "empty_payload"}` for a missing/empty `data`
+  field, both `400`) — proving the app has real validation logic, just not for whatever's
+  actually failing on well-formed payloads.
+- Adding plausible extra JSON fields alongside `data` (`name`, `id`, `model_name`, `filename`,
+  `format`) made no difference — rules out a simple missing-required-field `KeyError` as the
+  cause.
+- **Decisively ruled out "the exploit runs but is silently swallowed"** two different ways: a
+  payload whose `__reduce__` called `time.sleep(12)` returned in ~1s, not 12+s (the callable
+  never ran); a separate payload whose `__reduce__` made an outbound HTTP request to a
+  `webhook.site` callback URL never triggered it (confirmed via the webhook's own inbox API
+  showing zero received requests). Whatever rejects the payload happens **before** the reduce
+  tuple's callable would ever be invoked, for every format tried.
+
+**Open question, genuinely unresolved**: the failure is content-independent (garbage bytes fail
+identically to a well-formed `torch.save()` container), which rules out most "wrong serialization
+format" theories but doesn't point at an alternative explanation yet. Two attempted diagnostics —
+dynamically registering a new Flask route via the (never-reached) reduce callable, and registering
+a same-request Flask error handler to surface command output through the crash path — both
+produced no observable effect, consistent with the callable simply never firing rather than firing
+and failing silently.
+
+**Paused per explicit user request** after this investigation stalled — see the
+`AskUserQuestion` exchange in-session. Worth revisiting with either a fresh hypothesis (not
+another payload-format guess) or new information (a hint, or a teammate's finding on an adjacent
+challenge), same posture as the EGG V3 write-up above.
+challenge and any future boolean-oracle SQLi/NoSQLi target without a fresh script each time.
