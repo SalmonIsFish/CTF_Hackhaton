@@ -32,6 +32,7 @@ from agent.tools.keyed_decode import fetch_and_decode_cipher, keyed_byte_decode
 from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import analyze_binary_bytes, radare2_analyze
 from agent.tools.read_local_file import read_local_file
+from agent.tools.rsa_int_tools import is_probable_prime, rsa_decrypt_ints
 from agent.tools.rsa_tools import extract_hidden_key, rsa_decrypt_file
 from agent.tools.crack_hash import crack_hash
 from agent.tools._local_file_check import check_local_file
@@ -1827,3 +1828,170 @@ print(
 shared_mode_check = analyze_binary_bytes(b"not empty", "delete_everything")
 print(shared_mode_check)
 assert "Unknown mode" in shared_mode_check, f"expected an unknown-mode error, got: {shared_mode_check}"
+
+# ---------------------------------------------------------------------------
+# rsa_decrypt_ints -- textbook RSA from bare integers (agent/tools/rsa_int_tools.py).
+# Every vector below is built here from real primes and a real encryption, so the tool has to
+# actually factor and decrypt rather than pattern-match a fixture -- except the first, which is a
+# genuine captured picoCTF instance kept verbatim as a regression anchor.
+# ---------------------------------------------------------------------------
+import time  # noqa: E402 - imported here to keep it near its one use
+
+from agent.tools import rsa_int_tools  # noqa: E402 - imported here to keep it near its one use
+
+
+def _next_prime(start: int) -> int:
+    n = start | 1
+    while not is_probable_prime(n):
+        n += 2
+    return n
+
+
+def _make_instance(p: int, q: int, message: bytes, e: int = 65537):
+    """Build a real RSA instance and encrypt message with it, so the test asserts against an
+    actual round-trip instead of a hardcoded ciphertext nobody can re-derive."""
+    n = p * q
+    m = int.from_bytes(message, "big")
+    assert m < n, "test message must fit under the modulus"
+    return n, e, pow(m, e, n)
+
+
+print(
+    "\n=== rsa_decrypt_ints: EVEN modulus -- the real captured picoCTF 'Even RSA Can Be Broken' "
+    "instance, kept verbatim as a regression anchor (2026-08-06) ==="
+)
+even_rsa_result = rsa_decrypt_ints.invoke({
+    "n": "26716194337156063269936501752543499897745901380585729332631379322325660144003870733689"
+         "006426147408822189771290571015391443810163969195588334695894584477442",
+    "e": "65537",
+    "c": "23734026628360368000451021036700591254845786080708664965851057473379728271065722318406"
+         "82159605678020336275310529755367632769639739822284188887829882372291",
+})
+print(even_rsa_result)
+assert "picoCTF{tw0_1$_pr!m3de643ad5}" in even_rsa_result, (
+    f"expected the real captured flag from the even-modulus instance, got: {even_rsa_result}"
+)
+assert "p = 2" in even_rsa_result, f"expected p == 2 to be reported, got: {even_rsa_result}"
+
+print("\n=== rsa_decrypt_ints: small (non-2) prime factor, found by trial division ===")
+_small_p = 65003
+_small_q = _next_prime(10 ** 100)
+_n, _e, _c = _make_instance(_small_p, _small_q, b"flag{small_factor_trial_division}")
+small_factor_result = rsa_decrypt_ints.invoke({"n": str(_n), "e": str(_e), "c": str(_c)})
+print(small_factor_result)
+assert "flag{small_factor_trial_division}" in small_factor_result, (
+    f"expected the round-tripped plaintext, got: {small_factor_result}"
+)
+assert "trial division" in small_factor_result, f"expected the strategy to be named, got: {small_factor_result}"
+
+print("\n=== rsa_decrypt_ints: close primes, found by Fermat ===")
+_close_p = _next_prime(10 ** 60)
+_close_q = _next_prime(_close_p + 2)
+_n, _e, _c = _make_instance(_close_p, _close_q, b"flag{close_primes_fermat}")
+fermat_result = rsa_decrypt_ints.invoke({"n": str(_n), "e": str(_e), "c": str(_c)})
+print(fermat_result)
+assert "flag{close_primes_fermat}" in fermat_result, f"expected the round-tripped plaintext, got: {fermat_result}"
+assert "Fermat" in fermat_result, f"expected Fermat to be named as the strategy, got: {fermat_result}"
+
+print(
+    "\n=== rsa_decrypt_ints: repeated prime (n = p*p) -- phi is p*(p-1), NOT (p-1)^2; getting "
+    "that wrong decrypts to silent garbage rather than erroring, so assert the real plaintext ==="
+)
+_sq_p = _next_prime(10 ** 60)
+_n, _e, _c = _make_instance(_sq_p, _sq_p, b"flag{repeated_prime_square}")
+square_result = rsa_decrypt_ints.invoke({"n": str(_n), "e": str(_e), "c": str(_c)})
+print(square_result)
+assert "flag{repeated_prime_square}" in square_result, (
+    f"expected the round-tripped plaintext, got: {square_result}"
+)
+assert "perfect square" in square_result, f"expected the strategy to be named, got: {square_result}"
+
+print("\n=== rsa_decrypt_ints: medium factor above the trial-division limit, found by Pollard's rho ===")
+_rho_p = _next_prime(10 ** 9)  # above TRIAL_DIVISION_LIMIT, so only rho can find it, but fast
+_rho_q = _next_prime(10 ** 100)
+_n, _e, _c = _make_instance(_rho_p, _rho_q, b"flag{pollard_rho_medium_factor}")
+rho_result = rsa_decrypt_ints.invoke({"n": str(_n), "e": str(_e), "c": str(_c)})
+print(rho_result)
+assert "flag{pollard_rho_medium_factor}" in rho_result, f"expected the round-tripped plaintext, got: {rho_result}"
+
+print("\n=== rsa_decrypt_ints: two moduli sharing a prime -- gcd(n, n2) breaks both instantly ===")
+_shared = _next_prime(10 ** 60)
+_other_a = _next_prime(10 ** 61)
+_other_b = _next_prime(10 ** 62)
+_n, _e, _c = _make_instance(_shared, _other_a, b"flag{shared_prime_gcd}")
+_n2 = _shared * _other_b
+gcd_result = rsa_decrypt_ints.invoke({"n": str(_n), "e": str(_e), "c": str(_c), "n2": str(_n2)})
+print(gcd_result)
+assert "flag{shared_prime_gcd}" in gcd_result, f"expected the round-tripped plaintext, got: {gcd_result}"
+assert "gcd" in gcd_result.lower(), f"expected gcd to be named as the strategy, got: {gcd_result}"
+
+print("\n=== rsa_decrypt_ints: small e, message never wrapped the modulus -- exact integer cube root, no factoring ===")
+_cube_message = b"flag{low_exponent_no_padding}"
+_cube_m = int.from_bytes(_cube_message, "big")
+_cube_n = _next_prime(10 ** 200) * _next_prime(10 ** 201)
+cube_result = rsa_decrypt_ints.invoke({"n": str(_cube_n), "e": "3", "c": str(_cube_m ** 3)})
+print(cube_result)
+assert "flag{low_exponent_no_padding}" in cube_result, f"expected the cube-rooted plaintext, got: {cube_result}"
+assert "WITHOUT factoring" in cube_result, f"expected the no-factoring path to be reported, got: {cube_result}"
+
+print("\n=== rsa_decrypt_ints: PKCS#1 v1.5 padded plaintext is unpadded as well as shown raw ===")
+_pad_p = _next_prime(10 ** 60)
+_pad_q = _next_prime(_pad_p + 2)  # close primes, so Fermat factors it and the test is about padding
+_pad_n = _pad_p * _pad_q
+_pad_body = b"flag{pkcs1_v15_stripped}"
+_pad_len = (_pad_n.bit_length() + 7) // 8 - 3 - len(_pad_body)
+_pad_block = b"\x00\x02" + (b"\xab" * _pad_len) + b"\x00" + _pad_body
+_pad_m = int.from_bytes(_pad_block, "big")
+padded_result = rsa_decrypt_ints.invoke({
+    "n": str(_pad_n), "e": "65537", "c": str(pow(_pad_m, 65537, _pad_n)),
+})
+print(padded_result)
+assert "padding stripped): flag{pkcs1_v15_stripped}" in padded_result, (
+    f"expected the padding to be stripped cleanly, got: {padded_result}"
+)
+
+print("\n=== rsa_decrypt_ints: e sharing a factor with phi -- descriptive error, no crash, no guessed flag ===")
+_bad_e_p = _next_prime(10 ** 60)
+_bad_e_q = _next_prime(_bad_e_p + 2)  # close primes, so factoring succeeds and the gcd(e, phi) path is what is tested
+bad_e_result = rsa_decrypt_ints.invoke({
+    "n": str(_bad_e_p * _bad_e_q), "e": "2", "c": "12345",
+})
+print(bad_e_result)
+assert "no modular inverse" in bad_e_result, f"expected a descriptive gcd(e, phi) error, got: {bad_e_result}"
+
+print("\n=== rsa_decrypt_ints: c >= n -- catches mixing values from two different connections ===")
+mismatch_result = rsa_decrypt_ints.invoke({"n": "3233", "e": "17", "c": "999999999"})
+print(mismatch_result)
+assert "same RSA instance" in mismatch_result, f"expected a mismatched-instance error, got: {mismatch_result}"
+
+print("\n=== rsa_decrypt_ints: non-numeric input -- clean string, not an exception ===")
+bad_input_result = rsa_decrypt_ints.invoke({"n": "N: not a number", "e": "65537", "c": "42"})
+print(bad_input_result)
+assert "must all be integers" in bad_input_result, f"expected a parse error, got: {bad_input_result}"
+
+print("\n=== rsa_decrypt_ints: hex-tagged input is accepted (0x prefix) ===")
+hex_result = rsa_decrypt_ints.invoke({"n": "0x" + format(3233, "x"), "e": "17", "c": "0x" + format(2790, "x")})
+print(hex_result)
+assert "Factored n via" in hex_result, f"expected the hex form to parse and factor, got: {hex_result}"
+
+print(
+    "\n=== rsa_decrypt_ints: genuinely hard modulus (two balanced 256-bit primes, far apart) -- "
+    "must give up inside its budget with an honest message, not hang and not guess. Budget is "
+    "temporarily shortened so the suite stays fast ==="
+)
+_hard_budget = rsa_int_tools.FACTOR_BUDGET_SECONDS
+rsa_int_tools.FACTOR_BUDGET_SECONDS = 3.0
+try:
+    _hard_p = _next_prime(2 ** 255 + 12345)
+    _hard_q = _next_prime(3 ** 161 + 6789)
+    _hard_start = time.monotonic()
+    hard_result = rsa_decrypt_ints.invoke({
+        "n": str(_hard_p * _hard_q), "e": "65537", "c": "424242",
+    })
+    _hard_elapsed = time.monotonic() - _hard_start
+finally:
+    rsa_int_tools.FACTOR_BUDGET_SECONDS = _hard_budget
+print(f"(took {_hard_elapsed:.1f}s)\n{hard_result}")
+assert "Could not factor" in hard_result, f"expected an honest give-up message, got: {hard_result}"
+assert "Do NOT guess a flag" in hard_result, f"expected the anti-fabrication nudge, got: {hard_result}"
+assert _hard_elapsed < 15, f"expected the budget to be respected, took {_hard_elapsed:.1f}s"

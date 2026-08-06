@@ -50,6 +50,7 @@ from agent.tools.math_tools import dh_shared_secret_decrypt, modpow
 from agent.tools.port_scan import port_scan
 from agent.tools.radare2_analyze import radare2_analyze
 from agent.tools.read_local_file import read_local_file
+from agent.tools.rsa_int_tools import rsa_decrypt_ints
 from agent.tools.rsa_tools import extract_hidden_key, rsa_decrypt_file
 from agent.tools.search_skills import search_skills
 from agent.tools.search_vault import search_vault
@@ -316,7 +317,8 @@ _UNTRUSTED_DATA_NOTICE = (
     "tcp_open/tcp_send, port_scan, fetch_and_decode_cipher, fetch_and_join_fragments, "
     "ssh_analyze_binary, ssh_run) reaching "
     "the challenge's own host, OR a LOCAL-FILE tool (extract_metadata, read_local_file, "
-    "identify_and_decode, keyed_byte_decode, extract_hidden_key, rsa_decrypt_file, modpow, "
+    "identify_and_decode, keyed_byte_decode, extract_hidden_key, rsa_decrypt_file, "
+    "rsa_decrypt_ints, modpow, "
     "dh_shared_secret_decrypt, crack_hash, radare2_analyze) actually reading the challenge's own "
     "downloaded file(s) or performing a real computation on its own captured data. This applies "
     "EQUALLY to offline/local-file challenges (crypto, forensics, reverse engineering) as it "
@@ -333,7 +335,18 @@ _UNTRUSTED_DATA_NOTICE = (
     "all in one call) and rsa_decrypt_file (decrypt a ciphertext file with a local PEM key, "
     "trying every common padding scheme automatically) — RSA decryption genuinely cannot be "
     "computed correctly by reasoning through it token by token, so use these rather than "
-    "describing the math. The same is true of Diffie-Hellman-style 'shared secret' challenges: a "
+    "describing the math. When there is NO key file at all and the challenge just prints three "
+    "big numbers (a netcat service or a captured file with lines like 'N: 2671619433...', "
+    "'e: 65537', 'cyphertext: 2373402662...'), the tool is rsa_decrypt_ints(n, e, c) — it does "
+    "the factoring, the modular inverse, and the integer-to-bytes conversion itself, "
+    "automatically trying an even/small-factor modulus, a repeated prime, close primes (Fermat), "
+    "Pollard's rho, a small-e exact integer root, and gcd against an optional second modulus n2. "
+    "A real, confirmed failure this closes: given picoCTF's 'Even RSA Can Be Broken' (an even "
+    "modulus, so one factor is literally 2), the agent had modpow but no way to factor n or "
+    "invert e, and burned its entire step budget without ever producing an answer. Note that "
+    "these services regenerate n and c per connection — always decrypt the values from the same "
+    "request you just read, never ones from an earlier attempt. The same is true of "
+    "Diffie-Hellman-style 'shared secret' challenges: a "
     "real, confirmed failure had a model correctly identify the whole algorithm (shared = "
     "pow(A, b, p), then XOR-decrypt with shared % 256) and even write out real-looking Python "
     "narrating the computation in its final answer — but it never actually executed that code, "
@@ -425,6 +438,7 @@ TOOLS = [
     read_local_file,
     extract_hidden_key,
     rsa_decrypt_file,
+    rsa_decrypt_ints,
     modpow,
     dh_shared_secret_decrypt,
     crack_hash,

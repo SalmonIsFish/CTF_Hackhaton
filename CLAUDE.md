@@ -104,6 +104,49 @@ Every sub-agent and tool you add should map back to one of those four parts — 
 - **Two real bugs found and fixed in `radare2_analyze` along the way** (both apply to `ssh_analyze_binary` too, since it shares the same `analyze_binary_bytes` core): debug-info binaries address a disassembly target under a `dbg.`-prefixed flag with the full demangled signature, not the plain symbol name `symbols` mode reports — docstring now tells the model to prefer the hex `vaddr` instead; a 0-byte input (hit when a manually-placed WSL test file vanished between two calls — this environment's `/tmp` cleans unusually aggressively) silently returned an empty result instead of an error — now an explicit check.
 - **Still open**: a general "download an arbitrary file from a live target without corrupting it" capability independent of SSH (so `fetch_url`'s text-decode path isn't the only option feeding `radare2_analyze` for an HTTP-delivered binary) — this session closed the SSH-specific case only, not that broader one.
 
+### Session update (2026-08-06) — rsa_decrypt_ints closes the "RSA over netcat" category, and three real tcp_session bugs found underneath it
+- **Trigger**: picoCTF's "Even RSA Can Be Broken" (Cryptography) — a netcat service printing `N`,
+  `e`, `cyphertext` where `N` is **even**, so one prime factor is literally `2`. The agent stalled
+  on it through the dashboard; the flag (`picoCTF{tw0_1$_pr!m3de643ad5}`) was taken by hand first.
+  Full narrative in `evals/practice_runs.md`.
+- **Real capability gap, now closed**: `agent/tools/rsa_tools.py` is PEM/**file**-based (it wants a
+  key file and a ciphertext file on disk) and `math_tools.modpow` is only the *last* step of an RSA
+  decrypt — there was no factoring, no modular inverse, and no integer→bytes conversion anywhere.
+  So with all three integers in context the agent could only stall or fabricate. It fabricated:
+  a re-run fell through to `web_search` and stated a flag copied from a public writeup with a
+  different suffix (`observe()` correctly refused it since `web_search` is reference-only, but the
+  model still put it in its final answer instead of reporting the target unreachable).
+  `agent/tools/rsa_int_tools.py`'s `rsa_decrypt_ints(n, e, c, n2="")` now does the whole
+  computation and reports which strategy worked: small-e exact integer root, `gcd(n, n2)`, trial
+  division, `n = p*p`, Fermat, Pollard's rho, plus PKCS#1 v1.5 unpadding. Bounded by a 20s
+  factoring budget threaded through every loop, with Fermat capped at 35% of it — a real fix, not
+  a precaution: on far-apart primes Fermat can never win, and letting it run to its iteration cap
+  starved Pollard's rho of time it needed (observed: a solvable modulus turned into "budget
+  exhausted").
+- **Three real `tcp_session` bugs, found because the offline regression target reproduced the
+  original stall exactly** — all of them affect every multi-turn TCP challenge, not just this one:
+  `tcp_open` never read the banner a service volunteers on connect (so the agent had to *guess* a
+  `tcp_send` to see data already sitting in the socket); on a service that had already hung up that
+  send raised `WinError 10053` and `tcp_send` returned **only** the error, destroying the session
+  and discarding the bytes the peer had already sent (observed: `tcp_open → tcp_send → tcp_close`
+  looped three times with the answer unread in the socket every time — the original stall's exact
+  shape); and the recv loop always blocked for the *entire* timeout even after the reply was
+  complete, which raced interactive services that set their own read timeout while waiting for the
+  next command. `tcp_open` now does a 1.5s passive banner read, `tcp_send` drains even when the
+  send fails, and the full timeout applies only to the first byte (0.4s settle between chunks).
+  The login-gated practice scenario went from failing to passing in 0.83s, down from >10s.
+- **Verified end-to-end against the real target on a fresh instance — solved autonomously in 4
+  steps**: `tcp_open` (banner arrives immediately, no send needed) → `tcp_close` →
+  `rsa_decrypt_ints` → the real flag. Fresh `N`/`c`, so a real computation, not a recalled answer.
+  Offline coverage since picoCTF instances expire: `EvenRSATCPHandler` in `evals/practice_targets.py`
+  + scenario 4 of `evals/practice_runs_network.py` (all 4 network scenarios pass), and 13 new
+  `rsa_decrypt_ints` cases in `evals/test_tools_smoke.py`.
+- **Pre-existing flake to know about, unrelated to any of the above**: `test_tools_smoke.py`'s
+  `fetch_url` header-repair tests fail intermittently with `ConnectionAbortedError` (WinError
+  10053), a keep-alive race against the single-threaded local test servers. Measured, not assumed —
+  the *unmodified* suite at `HEAD` fails 4 of 5 runs, the same rate as the modified one. Re-run
+  before believing a red suite.
+
 ### Not yet done
 **→ See `NEXT_STEPS.md`** — pulled into its own file so this section doesn't turn into a running task list that drifts out of sync. Short version: teammates haven't started their pieces, and several organizer questions are still unanswered.
 
@@ -259,8 +302,13 @@ CTF_Hackhaton/
 │       ├── upload_file.py           ← done, verified — multipart/form-data file upload
 │       │                                (base64-encoded content_b64, since tool args are text-only);
 │       │                                fetch_url has no way to do this, added for file-upload challenges
+│       ├── rsa_int_tools.py         ← done, verified — rsa_decrypt_ints(n, e, c, n2): textbook
+│       │                                RSA from bare integers off a netcat service (no key
+│       │                                file), auto-trying even/small factors, p==q, Fermat,
+│       │                                Pollard's rho, small-e exact root, gcd across two moduli
 │       ├── tcp_session.py           ← done, verified — multi-turn nc/remote()-style TCP session
-│       │                                (tcp_open/tcp_send/tcp_close), session cap + lifetime cap
+│       │                                (tcp_open/tcp_send/tcp_close), session cap + lifetime cap;
+│       │                                tcp_open also passively reads the connect banner
 │       ├── port_scan.py             ← done, verified — pure-Python port sweep + passive banner
 │       │                                grab, no subprocess/nmap; capped ports-per-call
 │       ├── radare2_analyze.py       ← done, verified — read-only static binary analysis

@@ -1275,6 +1275,118 @@ rather than getting stuck). New regression tests cracking all 3 real hashes from
 plus `wordlist_path` (custom list, directory-given-instead-of-file), no-match, and
 unknown-algorithm error handling. Full suite passes. Logged in `evals/solved_challenges.md`.
 
+## Real picoCTF target — "Even RSA Can Be Broken" (Cryptography) — script-solved first, then solved autonomously by the agent in 4 steps after building rsa_decrypt_ints and fixing three tcp_session bugs
+
+`nc verbal-sleep.picoctf.net 51855`. The service prints three integers on connect and closes
+immediately — no prompt, no interaction:
+
+```
+N: 26716194337156063269936501752543499897745901380585729332631379322325660144003870733689006426147408822189771290571015391443810163969195588334695894584477442
+e: 65537
+cyphertext: 2373402662836036800045102103670059125484578608070866496585105747337972827106572231840682159605678020336275310529755367632769639739822284188887829882372291
+```
+
+The bug is in the name: `N` is **even**, so one prime factor is literally `2`. `q = N // 2` is
+prime (verified with Miller-Rabin, not assumed), so `phi = (2-1)*(q-1) = N//2 - 1`,
+`d = e^-1 mod phi`, `m = c^d mod N`, and `m` converts straight to ASCII. N is freshly generated
+per connection, so the params above are single-use — the solve script re-fetches them itself.
+
+**Flag: `picoCTF{tw0_1$_pr!m3de643ad5}`**
+
+**First attempt — the agent did *not* solve this.** Its dashboard run burned its whole budget
+calling `tcp_open` three times against the target (each one gated behind a separate HITL approval,
+each approved) and ended with "Session … closed" and no answer. The flag above was taken with a
+standalone script (`socket` + Miller-Rabin + `pow(e, -1, phi)`), run directly. Two separate real
+defects were underneath that, both since fixed — a missing tool, and two bugs in `tcp_session`.
+
+**Defect 1 — no tool could do textbook RSA from bare integers.** Not specific to this challenge.
+Inventory at the time —
+
+- `agent/tools/rsa_tools.py` — `extract_hidden_key` / `rsa_decrypt_file`, both **file/PEM-based**.
+  They want a key file and a ciphertext file on disk. They cannot take `N`, `e`, `c` as decimal
+  strings off a socket.
+- `agent/tools/math_tools.py` — `modpow(base, exponent, modulus)` and `dh_shared_secret_decrypt`.
+  `modpow` is the *last* step of an RSA decrypt, but there is no tool for the steps before it:
+  no factoring (not even the trivial "N is even" case), no modular inverse to get `d`, and no
+  integer→bytes conversion to turn `m` back into ASCII.
+
+So even on a run where `tcp_open` had worked perfectly and the agent had all three integers in
+context, the only paths left open to it were (a) get stuck, or (b) fabricate — the exact failure
+mode "StegoRSA" and "Shared Secrets" already documented twice in this file. Confirmed rather than
+assumed: a re-run against a fresh instance whose target had since expired did exactly (b) — it
+fell through to `web_search` and stated `picoCTF{tw0_1$_pr!m378257f39}`, a flag copied from a
+public writeup with a *different* suffix from the real one. `observe()` correctly refused it
+(`flag: None`, because `web_search` is in `_REFERENCE_ONLY_TOOLS`), but the model still put it in
+its final answer instead of reporting the target unreachable as the system prompt requires.
+
+**Fix**: `agent/tools/rsa_int_tools.py` — `rsa_decrypt_ints(n, e, c, n2="")`. Takes the three
+integers as decimal or `0x` hex strings and does the whole computation itself: factoring, the
+modular inverse `d = e^-1 mod phi`, `pow(c, d, n)`, and the integer→bytes conversion, reporting
+which strategy worked. Strategies, in order — exact integer `e`-th root of `c` when `e` is tiny
+and the message never wrapped the modulus (no factoring at all); `gcd(n, n2)` when the challenge
+hands out two moduli from the same buggy generator; trial division to 10^6 (this challenge's
+even modulus lands here); perfect square (`n = p*p`, where `phi` is `p*(p-1)`, **not** `(p-1)^2`
+— getting that wrong decrypts to silent garbage rather than erroring); Fermat for close primes;
+Pollard's rho (Brent) as the catch-all. It also strips PKCS#1 v1.5 padding when present, and
+verifies each cofactor is prime with deterministic Miller-Rabin rather than assuming it.
+
+Bounded like every other tool here: a 20s total factoring budget threaded through *all four*
+loops including trial division, with Fermat capped at 35% of the remaining budget — that last cap
+is a real fix, not a precaution. On far-apart primes Fermat can never succeed, and letting it run
+to its iteration cap starved Pollard's rho of the time it needed to find a factor that was
+actually there (observed while testing: a modulus with a 10^13 factor went from solved to "budget
+exhausted"). A genuinely hard modulus reports that honestly and says "Do NOT guess a flag."
+
+**Defect 2 — two real bugs in `tcp_session`, both hit by any "banner then close" service.** Found
+only because the offline regression target below reproduced the original stall exactly:
+- `tcp_open` never read the banner a service volunteers on connect, so the agent had to *guess* a
+  `tcp_send` to see data that was already sitting in the socket. `port_scan` had done a passive
+  banner read since it was written; `tcp_open` never did.
+- Worse, on a service that had already hung up, that guessed send raised `WinError 10053` and
+  `tcp_send`'s error path returned **only the error**, destroying the session and throwing away
+  the bytes the peer had already sent. Observed live: the agent looped
+  `tcp_open → tcp_send → tcp_close` three times and gave up with the answer sitting unread in the
+  socket every single time — the same shape as the original dashboard stall.
+
+`tcp_open` now performs a 1.5s passive banner read and returns it (wrapped in `<untrusted_data>`),
+`tcp_send` drains whatever is receivable *even when the send fails* and returns it alongside the
+error, and the docstring tells the model to read `tcp_open`'s result before deciding to send
+anything at all.
+
+**A third bug, found while fixing those two**: the receive loop always blocked for the *entire*
+timeout, even after the service had finished replying — a 5s `tcp_send` really did take 5s. That
+raced interactive services, which set their own read timeout while waiting for the next command:
+a login would succeed and the *next* command would arrive after the service had already given up
+and answered "Unknown command." Now the full timeout applies only to the first byte, with a 0.4s
+settle window between subsequent chunks. The login-gated practice scenario went from failing to
+passing in 0.83s (previously >10s), and this had been silently degrading every multi-turn TCP run
+in the repo, not just this challenge.
+
+**Verified end-to-end against the real target on a fresh instance — solved autonomously in 4
+steps**, no hand-holding: `tcp_open` (banner with the three integers arrives immediately, no
+`tcp_send` needed) → `tcp_close` → `rsa_decrypt_ints` → `picoCTF{tw0_1$_pr!m3de643ad5}`. The
+instance's `N` and `c` were freshly generated and differed from the values decrypted by hand
+earlier, so this is a real computation, not a recalled answer. Triaged to `crypto` correctly.
+
+**Offline regression coverage**, since the real target is an expiring per-session picoCTF instance
+that could not be re-run on demand (it went down between the first attempt and the fix):
+`EvenRSATCPHandler` in `evals/practice_targets.py` is a faithful local stand-in — even modulus,
+regenerated per connection, prints and hangs up, down to the misspelled "cyphertext" label — and
+scenario 4 of `evals/practice_runs_network.py` runs the full agent loop against it. All four
+network scenarios pass. `evals/test_tools_smoke.py` adds 13 `rsa_decrypt_ints` cases: the real
+captured instance above kept verbatim as an anchor, one per factoring strategy (each built from
+real primes and a real encryption, so the tool has to actually factor rather than match a
+fixture), PKCS#1 v1.5 stripping, and the failure paths (`gcd(e, phi) != 1`, `c >= n` catching
+values mixed from two different connections, non-numeric input, and a hard modulus giving up
+inside its budget).
+
+**Unrelated pre-existing flake worth knowing about**: `evals/test_tools_smoke.py`'s `fetch_url`
+header-repair tests fail intermittently with `ConnectionAbortedError` (WinError 10053) — a
+keep-alive race against the single-threaded local `BaseHTTPRequestHandler` test servers.
+Measured, not assumed: the *unmodified* suite at `HEAD` fails 4 of 5 runs, the same rate as the
+modified one. Not caused by any change here, but it does mean a red suite needs a re-run before
+being believed.
+
 ## Models ruled out — don't retry these
 
 - **`gemini-2.5-flash`** — retired for this API key. Returns `404 NOT_FOUND`

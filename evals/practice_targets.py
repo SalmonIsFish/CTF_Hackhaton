@@ -3,10 +3,13 @@ stress the network tools against realistic multi-step patterns the earlier singl
 tests/demo didn't touch: a multi-turn login-gated TCP service, an HTTP redirect+cookie chain,
 and a banner-emitting service for port_scan to find.
 
+plus an "even modulus" RSA service that hands out N/e/ciphertext over a socket.
+
 These are local stand-ins, not real picoCTF/organizer targets — see evals/practice_runs.md
 for the explicit caveat about what running against these does and doesn't prove.
 """
 import http.server
+import random
 import socketserver
 import threading
 from typing import Tuple, Type, Union
@@ -15,6 +18,7 @@ LOGIN_PASSWORD = "letmein"
 LOGIN_FLAG = "flag{multi_turn_tcp_works}"
 REDIRECT_FLAG = "flag{redirect_cookie_works}"
 BANNER_TEXT = "SSH-2.0-OpenSSH_9.6p1"
+EVEN_RSA_FLAG = "flag{even_modulus_rsa_works}"
 
 
 class LoginGatedTCPHandler(socketserver.BaseRequestHandler):
@@ -83,6 +87,43 @@ class BannerTCPHandler(socketserver.BaseRequestHandler):
             self.request.sendall((BANNER_TEXT + "\n").encode())
         except OSError:
             pass
+
+
+class EvenRSATCPHandler(socketserver.BaseRequestHandler):
+    """Prints N, e, and the ciphertext on connect and immediately closes — a faithful local
+    stand-in for picoCTF's "Even RSA Can Be Broken", down to the misspelled "cyphertext" label.
+    N is EVEN (one prime factor is literally 2), and, like the real service, every connection
+    regenerates q and therefore N and c, so a run cannot pass by reusing a memorized value.
+
+    Exists because the real target is an expiring per-session picoCTF instance: the end-to-end
+    agent run that first needed rsa_decrypt_ints could not be re-verified against it minutes
+    later (the instance had already gone down, connection refused). This keeps that whole path
+    — tcp_open, read three big integers, rsa_decrypt_ints, flag — testable offline forever.
+    """
+
+    flag = EVEN_RSA_FLAG
+
+    def handle(self) -> None:
+        q = _random_prime(512)
+        n = 2 * q
+        e = 65537
+        m = int.from_bytes(self.flag.encode(), "big")
+        c = pow(m, e, n)
+        try:
+            self.request.sendall(f"N: {n}\ne: {e}\ncyphertext: {c}\n".encode())
+        except OSError:
+            pass
+
+
+def _random_prime(bits: int) -> int:
+    """Small local helper rather than a dependency — this file is deliberately stdlib-only, and
+    the primality test lives with the tool under test (agent/tools/rsa_int_tools.py)."""
+    from agent.tools.rsa_int_tools import is_probable_prime
+
+    while True:
+        candidate = random.getrandbits(bits) | (1 << (bits - 1)) | 1
+        if is_probable_prime(candidate):
+            return candidate
 
 
 def start_server(

@@ -3,7 +3,8 @@
 Closes the gap flagged in NEXT_STEPS.md Phase 1: the network tools had only been proven
 against a single trivial local server (one GET, one echo exchange). This exercises
 tcp_session on a genuine multi-turn (login then command) service, fetch_url on a
-redirect+cookie chain, and port_scan on a mixed open/closed port sweep — all through the
+redirect+cookie chain, port_scan on a mixed open/closed port sweep, and rsa_decrypt_ints on
+an even-modulus RSA service handing out N/e/ciphertext over a socket — all through the
 real triage -> think -> act -> observe loop, not the tool in isolation (that mechanics-level
 coverage is evals/test_tools_smoke.py's job).
 
@@ -20,10 +21,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from agent.graph import build_graph, message_text, run_config
 from evals.practice_targets import (
     BANNER_TEXT,
+    EVEN_RSA_FLAG,
     LOGIN_FLAG,
     LOGIN_PASSWORD,
     REDIRECT_FLAG,
     BannerTCPHandler,
+    EvenRSATCPHandler,
     LoginGatedTCPHandler,
     RedirectCookieHTTPHandler,
     start_server,
@@ -103,6 +106,27 @@ try:
 finally:
     banner_server.shutdown()
     banner_server.server_close()
+
+# Scenario 4: even-modulus RSA service — stresses the whole crypto-over-netcat path end to end
+# (tcp_open -> tcp_send to read three big integers -> rsa_decrypt_ints). The offline stand-in for
+# picoCTF's "Even RSA Can Be Broken", which the agent solved for real in 4 steps but which lives
+# on an expiring per-session instance that cannot be re-run on demand.
+rsa_server, rsa_port = start_server(EvenRSATCPHandler)
+try:
+    case_4 = run_case(
+        "even-modulus RSA over netcat",
+        f"There's a service at 127.0.0.1:{rsa_port} that gives you an encrypted flag. Connect to "
+        "it and decrypt the flag with just N and e. Notice anything interesting about N?",
+    )
+    ok_4 = (
+        case_4["result"]["flag"] == EVEN_RSA_FLAG
+        and "tcp_open" in case_4["tool_calls"]
+        and "rsa_decrypt_ints" in case_4["tool_calls"]
+    )
+    record("even-modulus RSA (tcp_session -> rsa_decrypt_ints)", ok_4, f"flag={case_4['result']['flag']}")
+finally:
+    rsa_server.shutdown()
+    rsa_server.server_close()
 
 
 print("\n=== Summary ===")
