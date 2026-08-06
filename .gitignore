@@ -8,6 +8,8 @@ evals/run_log.jsonl
 # practice material, not part of this project, and not ours to redistribute.
 HTB Challnges/
 PICOCHALLENGE/
+Hackhton_UCSI/
+cve_body.json
 
 # Obsidian's local UI state (window layout, open panes, theme) -- not shared vault content,
 # and different per person who opens the vault, so tracking it just creates merge-conflict noise.

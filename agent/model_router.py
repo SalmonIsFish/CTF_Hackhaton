@@ -47,6 +47,24 @@ def _is_quota_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_dead_key_error(exc: BaseException) -> bool:
+    """True if exc, or anything in its __cause__ chain, is a 401/UNAUTHENTICATED APIError --
+    a credential that is simply broken (revoked, expired, or -- the real case that triggered
+    this -- an 'AQ.'-prefixed auth key whose bound service account was deleted/disabled,
+    ACCESS_TOKEN_TYPE_UNSUPPORTED/ACCOUNT_STATE_INVALID), as opposed to _is_quota_error's
+    'this key is fine but temporarily rate-limited' case. Distinguished because the right
+    response differs: a quota error is worth retrying once COOLDOWN_SECONDS passes, but a dead
+    key never recovers on its own, so treating it the same way would mean silently re-trying a
+    permanently broken key every COOLDOWN_SECONDS for the rest of the run. See
+    _RotatingChatModel.invoke, which gives this class of error its own, much longer cooldown."""
+    seen = exc
+    while seen is not None:
+        if isinstance(seen, APIError) and (seen.code == 401 or seen.status == "UNAUTHENTICATED"):
+            return True
+        seen = seen.__cause__
+    return False
+
+
 # A separate, transient class of failure from quota exhaustion -- confirmed live: "503
 # UNAVAILABLE ... This model is currently experiencing high demand ... Please try again later."
 # Google's own message says this resolves itself; it's shared infrastructure being temporarily
@@ -105,9 +123,16 @@ class _RotatingChatModel:
     key's ~60s RPM window (tighter than the daily cap, see CLAUDE.md) permanently pushes every
     later request onto the next key (eventually the paid one) even after that window clears.
     Cooldown-based skipping self-heals: once COOLDOWN_SECONDS has passed, list order is
-    consulted again, so a recovered free key is retried before the paid one. Only a
-    429/RESOURCE_EXHAUSTED error triggers ROTATION to a different key — this is a quota
-    fallback, not a generic retry-on-any-error mechanism. A separate, transient class of error
+    consulted again, so a recovered free key is retried before the paid one. Only two error
+    shapes trigger ROTATION to a different key — this is a fallback for known-recoverable
+    problems with the CURRENT key, not a generic retry-on-any-error mechanism: a
+    429/RESOURCE_EXHAUSTED quota error (cooldown COOLDOWN_SECONDS, since the window passes on
+    its own) and a 401/UNAUTHENTICATED dead-key error (cooldown DEAD_KEY_COOLDOWN_SECONDS,
+    effectively permanent, since a broken credential does not fix itself) — see
+    _is_quota_error/_is_dead_key_error. A dead PRIMARY key still reaches a paid OpenRouter
+    overflow appended to the list (see _build_google_model), which is the whole reason this
+    distinction exists: without it, a 401 on every call would just raise immediately and never
+    reach the working fallback sitting right after it. A separate, transient class of error
     (503/UNAVAILABLE and similar -- shared infrastructure temporarily overloaded, not a
     per-key issue) gets a few retries on the SAME key first, via _invoke_with_transient_retry,
     before falling through to this class's own exception handling."""
@@ -116,6 +141,13 @@ class _RotatingChatModel:
     # requests/minute, separate from and tighter than the documented 500/day") so a key isn't
     # retried while still inside the window that just rejected it.
     COOLDOWN_SECONDS = 90
+
+    # A dead key (see _is_dead_key_error) does not recover on its own the way a quota window
+    # does -- regenerating one requires a human. Cooling it down for the rest of the process
+    # lifetime, rather than COOLDOWN_SECONDS, avoids burning one wasted call per request on a
+    # key confirmed broken (real case: an "AQ." auth key whose bound service account was
+    # deleted, 401 ACCESS_TOKEN_TYPE_UNSUPPORTED on every single call, not just sometimes).
+    DEAD_KEY_COOLDOWN_SECONDS = 10**9
 
     def __init__(self, models: list):
         if not models:
@@ -143,6 +175,10 @@ class _RotatingChatModel:
                 if _is_quota_error(exc):
                     last_exc = exc
                     self._cooldown_until[i] = now + self.COOLDOWN_SECONDS
+                    continue
+                if _is_dead_key_error(exc):
+                    last_exc = exc
+                    self._cooldown_until[i] = now + self.DEAD_KEY_COOLDOWN_SECONDS
                     continue
                 raise
         raise last_exc

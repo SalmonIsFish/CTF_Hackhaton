@@ -1416,3 +1416,228 @@ for m in client.models.list():
 
 Quota limits only show up when you actually hit them (in the `429` error body), not
 from the listing call above.
+
+## Real hackathon-organizer target — "StaffDesk" (Web, GraphQL IDOR → account takeover) — flag captured by hand via curl, agent not yet re-tried
+
+Target `52.76.96.108:3014` (UCSI26 hackathon-organizer challenge). Flag captured:
+**`UCSI26{gr4phql_1d0r_2_admin_t4k30v3r}`**.
+
+**App shape**: a single GraphQL endpoint at `/graphql`, no REST surface, no dashboard/agent run
+attempted this time — solved directly by hand from the initial prompt ("StaffDesk... GraphQL...
+an administrator account that can read anything, including the master key").
+
+**Recon — introspection was enabled with no auth required.** A standard full introspection query
+(`__schema { types { ... } }`) against `/graphql` returned the entire schema unauthenticated:
+`Query { me, user(id), tickets, flag }`, `Mutation { register(username,password),
+login(username,password), resetPassword(resetToken,newPassword), fileTicket(subject) }`, and a
+`User` type with `id, username, role, email, resetToken, joinedAt`. The `flag` query field and the
+`resetToken` field on `User` were both immediately conspicuous — `flag` because it's named exactly
+what the prompt promised, `resetToken` because no legitimate response should ever hand a client
+another account's password-reset secret.
+
+**Confirmed access control on the obvious paths**: `query { flag }` unauthenticated →
+`"forbidden: admin only"` (a real 403-shaped GraphQL error, not silently null). `query { user(id:
+1) }` unauthenticated → `"auth required"`. So both the "read the flag" and "read another user's
+profile" paths do check *something* — just not enough.
+
+**The actual bug — a GraphQL IDOR on `user(id)`.** Registered a throwaway account (`register`
+mutation), authenticated with `Authorization: Bearer <token>` on subsequent requests, then simply
+queried `user(id: 1)` — no ownership or role check gates which user ID you can look up once
+you're authenticated *at all*. This returned admin's full record, including
+`resetToken: "c9709171b5d656dcfff375d232223ad4"` (id 1, `role: "admin"`).
+
+**One genuine wrinkle, not a dead end**: admin's `resetToken` value **rotates roughly every ~13
+seconds** (confirmed by sampling `user(id:1) { resetToken }` once a second — stable for ~10
+consecutive samples, then a fresh value, repeating) — a deliberate anti-IDOR mitigation, since a
+normal user's token (checked the same way, e.g. `user(id:2)`) stayed constant across the same
+sampling window. The first `resetPassword` attempt failed (`"invalid reset token"`) purely because
+the fetch and the reset were two separate manual `curl` invocations with enough latency between
+them to cross a rotation boundary — not because the technique was wrong. Fixed by chaining fetch
+→ extract → reset back-to-back in one shell sequence (well under the rotation window): this time
+`resetPassword(resetToken: <freshly-fetched admin token>, newPassword: "Pwned123!")` succeeded and
+returned a real admin session token (`{"user":{"id":1,"username":"admin","role":"admin"}}`).
+`query { flag }` with that admin token then returned the flag directly.
+
+**Root cause**: the `resetToken` field on `User` had no field-level authorization at all — any
+authenticated user (not just admins, not just the token's owner) could read it for any account via
+`user(id)`, turning a self-service password-reset feature into a full unauthenticated-to-admin
+account-takeover primitive. The rotating-token behavior meaningfully raises the bar (you can't
+grab-and-hold a token from an old query result) but doesn't close the hole, since the resolver
+still hands out a currently-valid token to anyone who asks.
+
+**Not yet done**: re-running this through the actual agent loop rather than solving it by hand.
+Real capability gap this run exposed: none of today's tools run a GraphQL introspection query or
+know to try one — `fetch_url` can technically POST the raw JSON body needed, but nothing in the
+system prompt nudges the model toward "this is GraphQL, start with introspection" the way
+`dir_enum` is the reflex for a REST/unknown-routes target. Worth a `ctf-web` skill-pack note
+(GraphQL introspection as the first move against any `/graphql` endpoint, plus "check every field
+returned by introspection for auth-sensitive names like `resetToken`/`secret`/`internal*`, not
+just the obviously-named `flag` field") if more GraphQL targets show up this event. (Web, business-logic/race condition) — flag captured by hand via curl, agent's dashboard run stalled first
+
+Target `52.76.96.108:3000` (UCSI26 hackathon-organizer challenge, not picoCTF/HTB) — flag format
+`UCSI26{...}`. Flag captured: **`UCSI26{4sync_settlement_r4c3_110cbe1e}`**.
+
+**App shape**: a single-page "Withdraw BTC" UI (`Balance: 1.0000 BTC`) backed by an Express app
+(`connect.sid` session cookie). `POST /api/withdraw {"amount": N}` queues a withdrawal ("cleared
+in the next settlement batch"); `POST /api/balance` polls current balance/pending count;
+`POST /api/reset` resets the session's account. `client.js` reveals the win condition up front:
+polling `/api/balance` looks for `d.flag || (d.lastTx && d.lastTx.settlement_override)` — i.e. the
+flag is delivered as a `settlement_override` field on a real API response, not hidden in source.
+
+**Dashboard/agent run stalled first**: through the HITL-gated dashboard, the agent did legitimate
+recon (`fetch_url` on `/` and `/client.js`, then a `dir_enum` sweep that correctly found nothing —
+there's no hidden path, the whole surface is the two documented API routes) and then asked the
+human to just hand it the flag, rather than reasoning about the batching mechanic itself. Solved
+by hand afterward, directly against the live target, to establish ground truth for what the
+intended bug actually is.
+
+**Root cause, confirmed by direct exploitation**: `POST /api/withdraw` validates
+`amount <= balance` **per request**, against the account's static balance, with no accounting for
+other withdrawals already sitting in the same session's pending queue — a classic TOCTOU/race
+condition. A single request for more than the balance is correctly rejected
+(`{"error":"insufficient_balance"}` for `amount: 2` against a 1 BTC balance), so the naive single-
+shot overdraw path is closed. But nothing stops many requests, each individually valid, from being
+accepted concurrently before any of them are actually applied to the balance.
+
+**Two false starts before finding the real trigger**, both instructive:
+1. First "race" (many concurrent `curl` calls, no shared cookie) did nothing — Express's
+   `connect.sid` session cookie means every cookie-less request gets a **brand-new** session, so
+   40+ concurrent withdrawals landed on 40+ different fresh 1-BTC accounts instead of racing one
+   real balance. Confirmed via `curl -i`: every response carries a fresh `Set-Cookie`.
+2. Fix: establish one session first (`curl -c/-b cookiejar.txt -X POST .../api/reset`), then fire
+   all concurrent requests reusing that same cookie jar so they actually contend over one shared
+   balance/pending state.
+
+**The actual exploit**: with one shared session, fired 40 concurrent `POST /api/withdraw`
+requests of `0.9999` BTC each. Every single one was individually accepted (`0.9999 <= 1`, the only
+check performed), driving `pending` to 40 — roughly **40 BTC queued against a 1 BTC balance**.
+Polling `/api/balance` immediately after showed the settlement batch had processed the full queue
+literally, taking the account to a real negative balance (`balance: -38.996`) — and that
+overdraft tripped the exchange's own fraud "risk-override" path, which (bug, not intended
+defense) leaks the flag directly instead of just blocking/reversing the settlement:
+`{"balance":-38.996,"pending":0,"flag":"UCSI26{4sync_settlement_r4c3_110cbe1e}","lastTx":{...,"settlement_override":"UCSI26{...}"}}`.
+
+**Not yet done**: re-running this exact recipe through the actual agent loop (not just by hand)
+to see whether it can find "race many concurrent withdrawals against one shared session" on its
+own. The dashboard run above never even attempted concurrency — it only made sequential, single
+calls (`fetch_url` x2, `dir_enum` x1) before giving up and asking for the flag directly. Two real
+capability gaps worth closing if this class of challenge recurs: (1) none of the existing tools
+(`fetch_url`, `tcp_open`/`tcp_send`, `port_scan`, `dir_enum`) can fire multiple concurrent requests
+sharing one session in a single tool call — the model would have to script that itself, which none
+of today's tools support (no code-execution tool exists outside the WSL-bridged
+`radare2_analyze`/`ssh_session` pair, and those aren't wired for arbitrary HTTP); (2) `fetch_url`
+already has a `session_id` cookie-jar param (added for "IntroToBurp") but nothing in this run's
+system prompt nudges the model toward "business-logic race condition" as a category to consider
+when a challenge explicitly says "batches" or "settlement" — worth a `ctf-web` skill-pack note
+(TOCTOU/race conditions on batched/async operations) if this pattern shows up again.
+
+## Real hackathon-organizer target — "Sandworm VM" (Binary exploitation, custom bytecode interpreter) — solved by hand via direct reversing + a scripted exploit, not through the agent loop
+
+Target `nc 52.76.96.108 9006` (UCSI26 hackathon organizer challenge, 500 pts), binary supplied
+locally at `Hackthon_UCSI/Sandworm/sandworm` (ELF64 PIE, dynamically linked, **not stripped**).
+Flag captured: **`UCSI26{sandworm_vm_oob_escape_025a2ef7}`**.
+
+**Solved by Claude directly** (WSL-bridged `radare2`/`rabin2` via Bash, then a standalone Python
+exploit script) — not run through `agent.graph`. The binary's symbol table alone (not stripped)
+made the whole vulnerability visible from static analysis without needing to interact with the
+live service first; the live service was only touched once, to fire the finished exploit.
+
+**Challenge shape**: "16 registers, 256 memory cells, a tidy little instruction set. Reverse the
+provided binary, learn its instruction set, and find out where the sand gives way." — a
+from-scratch bytecode VM, banner confirms: `ISA: 16 regs (r0-r15), 256 mem cells, 8-byte insns.
+Send uint32 LE program length, then the bytecode.`
+
+**Reversing approach**: `rabin2 -s` first (symbols intact: `main`, `load_program`,
+`check_reg.part.0`, `emit_flag`, `hook_default`, `die`, `read_exact`, `write_all`) — the presence
+of `emit_flag` as a real function in the binary, never called from the VM's own opcode handlers
+in the disassembly, was the first strong signal of the intended exploitation target before any
+vulnerability was even confirmed. `r2 -c 'aaa; pdf @ main'` then gave the entire interpreter loop
+(`main` is the loop — no separate `execute()`), including the 23-entry (opcodes 0-22) jump table
+and every case body, disassembled and read line-by-line by hand to reconstruct the full ISA (see
+`vault/techniques/pwn/custom-vm-oob-index-write.md` for the general technique and full opcode
+table). VM state lives in one `calloc(1, 0x8898)` buffer: registers at `base+0`, 256 memory cells
+at `base+0x80`, a `hook_default` function pointer at `base+0x880` (called by opcode 22, `HOOK`),
+a "hook arg" qword at `base+0x888`, then the raw bytecode buffer, program length, and PC.
+
+**The bug**: opcodes 20 (`LOAD reg_a, mem[reg_b + imm]`) and 21 (`STORE mem[reg_a + imm],
+reg_b`) bounds-check the *register-held* index (`cmp reg, 0xff; ja error`) but then add the
+instruction's raw 32-bit immediate to that already-validated value with **no second check**
+before using it as the final `base + index*8` address — an unchecked-offset OOB read/write
+relative to the entire VM state buffer. Confirmed further by opcodes 3/4 (`LOAD_SAFE`/
+`STORE_SAFE`, no immediate) sitting right next to 20/21 and doing the equivalent operation with
+a real, complete bounds check — strong evidence 20/21's gap is the intended bug, not an
+oversight to work around some other way.
+
+**The exploit** (6 instructions, one 48-byte bytecode program, one `nc` round-trip):
+1. `MOVI r0, 0`
+2. `LOAD r1, mem[r0 + 256]` — OOB-reads `base+0x880` (index `(0+256+16)*8 = 0x880`), leaking
+   `hook_default`'s live runtime address — i.e. the binary's PIE load base, since
+   `hook_default`'s static offset (`0x16e0`) is known from the symbol table.
+3. `ADDI r1, 0x1e0` — `0x1e0` is the fixed static delta between `hook_default` (`0x16e0`) and
+   `emit_flag` (`0x18c0`) in the binary; `r1` now holds `emit_flag`'s real runtime address.
+4. `STORE mem[r0 + 256], r1` — OOB-writes that address back over the `hook_default` pointer at
+   `base+0x880`.
+5. `HOOK r2` — opcode 22 calls `qword[base+0x880]` (now `emit_flag`) with `(rdi=base,
+   rsi=[base+0x888])`. `emit_flag()` ignores both arguments entirely (confirmed from its own
+   disassembly — it's a `void emit_flag(void)` in practice), reads `FLAG_FILE`/`/flag`/
+   `/flag.txt`/env `FLAG` in that order, and `write()`s the contents straight to fd 1 — i.e.
+   straight down the same TCP connection the exploit is talking on.
+6. `HALT` (opcode 0) for a clean exit; not strictly required, since running off the end of the
+   program is also treated as `done.` by the interpreter.
+
+Sent via a raw Python `socket` (protocol is just "send u32 LE length, then that many bytes of
+bytecode" — no need for the full `agent/tools/tcp_session.py` machinery for a single one-shot
+send). Flag appeared in the very next read off the socket, before the VM's own `done.` line.
+
+**Not yet done**: re-running this through the actual agent loop was not attempted this session —
+this was reversing-heavy, static-analysis-first work (full manual ISA reconstruction from a
+disassembly) that doesn't currently map onto any existing tool's designed workflow the way
+`radare2_analyze`/`ssh_analyze_binary` do for more conventional "find the bug in a normal C
+program" RE challenges; a custom-VM challenge like this would need the model to synthesize a
+complete instruction-set model from raw disassembly and then hand-write exploit bytecode, which
+is a substantially harder ask than anything in the existing RE eval cases (see "Bypass Me" above
+for the closest existing case, a single XOR constant, not a full custom ISA). Worth attempting a
+real agent run against a similar future challenge to see how far triage + `search_vault` (now
+that the general technique is documented) + `radare2_analyze` get on their own before concluding
+this genuinely needs a new tool (e.g. something that can send/receive raw framed bytes to a
+`nc`-style service without going through the full `tcp_session.py` session model).
+
+## Hackathon organizer target — "EGG V3" (Web, 500 pts, 0 solves) — investigated extensively, not solved
+
+Target `http://52.76.96.108:3012` (UCSI26 hackathon organizer challenge). Question posed by the
+challenge itself: "What does egg stand for". **Not solved** — recorded here so a future session
+doesn't repeat the same exhaustive black-box pass from scratch.
+
+**Confirmed dead-ends, all verified independently via `curl`, raw Python sockets, a real Chrome
+browser session, and `nmap`** (not just one tool's read, to rule out a client-specific quirk):
+- The server answers **every** request — any HTTP method (GET/HEAD/POST/PUT/DELETE/OPTIONS/
+  PATCH/TRACE), any of ~20 guessed paths (including version-prefixed `/v1`/`/v2`/`/v3`/`/api/v3`
+  and JSON-`action`-style bodies matching a past similar challenge's pattern), any query string,
+  any custom/version header, a persistent cookie jar across sequential requests, a WebSocket
+  upgrade handshake — with an identical `HTTP 200 OK`, **zero-byte body**. Confirmed via raw
+  socket read (not just curl's parsed view) that this is a real, immediate, clean-close empty
+  response, not a stalled/streaming one curl was mishandling.
+- `nmap -sV -Pn` against the 20 most common ports: **only 3012 is open**, everything else is
+  firewalled (`filtered`), so there's no second service to pivot to. The service fingerprint
+  confirms a real, strict HTTP parser (malformed/non-HTTP probes correctly get `400 Bad Request`,
+  not the same blank `200`) — the emptiness is a deliberate response, not a crashed/dead process
+  blindly echoing something.
+- HTTP request smuggling attempts (CL.TE and TE.CL desync payloads, and an obfuscated
+  `Transfer-Encoding : chunked` header with a space before the colon) sent via raw sockets all
+  got a clean `400 Bad Request` — one strict parser, no front-end/back-end pair to desync.
+- A `Host` header of `localhost`/`*.local` returns a *different*, non-empty `503` — but this is a
+  **false lead**: verified (via `curl -v`, confirming the TCP connection really was to
+  `52.76.96.108:3012` directly) that the 503 body is a corporate/network web-filter block page
+  (`Category: private-ip-addresses`) intercepting on our own network path, unrelated to the
+  actual target. Any Host value the filter doesn't flag (the bare IP, `example.com`, a random
+  domain) gets the same empty `200` as everything else — no real vhost routing exists.
+- No public writeup exists (searched); "EGG V3" implies a series but there is no "EGG V1"/"V2" on
+  this platform — confirmed from the actual challenge list, it's a standalone name. No downloadable
+  attachment or separate hints tab on the challenge page (confirmed by the user directly). Organizer
+  confirmed nothing is broken/down on their end.
+
+**Open, not yet tried**: nothing external-probing-shaped is left to try in good conscience without
+either an organizer hint or a teammate finding something from an adjacent challenge — further
+blind fuzzing of a live scored target has poor payoff at this point and mild etiquette cost.
+Revisit only if new information surfaces (a hint drop, another team's partial progress, or a
+teammate solving an adjacent challenge that turns out to share infrastructure/technique).

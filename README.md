@@ -23,6 +23,27 @@ returns a flag (or its best answer) with a full tool-call trace.
 For the full build history, model-choice rationale, and known issues, see `CLAUDE.md`. For the
 current TODO list, see `NEXT_STEPS.md`. Per-teammate task briefs are in `TEAM_TASKS.md`.
 
+## Results
+
+Flag captures are tracked as a running index in `evals/solved_challenges.md` (full narrative
+write-ups, including bugs found and fixed along the way, live in `evals/practice_runs.md`). As of
+this writeup: **28 real flags captured** across picoCTF, HackTheBox, and this event's own
+organizer-set challenges, including three from the live competition itself:
+
+| Challenge | Category | Flag |
+|---|---|---|
+| Saturn Exchange | web — business-logic race condition (TOCTOU) | `UCSI26{4sync_settlement_r4c3_110cbe1e}` |
+| StaffDesk | web — GraphQL IDOR → admin takeover | `UCSI26{gr4phql_1d0r_2_admin_t4k30v3r}` |
+| Sandworm VM | pwn — custom VM, unchecked-offset OOB read/write | `UCSI26{sandworm_vm_oob_escape_025a2ef7}` |
+
+Autonomy varies by write-up and is reported honestly rather than rounded up — many picoCTF/HTB
+flags were captured by the agent loop end-to-end with no human intervention (see
+`evals/solved_challenges.md` for the step counts), while the three competition flags above were
+solved by a human/Claude Code directly against the live scored infrastructure, with real gaps this
+exposed in the agent (no concurrent-request tool, no GraphQL-introspection nudge, no custom-ISA
+reversing workflow) called out as open items in `evals/solved_challenges.md` and `NEXT_STEPS.md`
+rather than glossed over.
+
 ## Prerequisites
 
 - Python 3.14

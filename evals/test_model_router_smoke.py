@@ -9,6 +9,7 @@ from google.genai.errors import APIError
 
 from agent.model_router import (
     TRANSIENT_RETRY_ATTEMPTS,
+    _is_dead_key_error,
     _is_quota_error,
     _is_transient_error,
     _load_keys,
@@ -23,15 +24,24 @@ class _WrappedQuotaError(Exception):
     that does `except APIError` (the original, buggy implementation) never sees this shape."""
 
 
+class _WrappedDeadKeyError(Exception):
+    """Same wrapping shape as _WrappedQuotaError, for the 401 dead-key case -- confirmed
+    against a real run where a Google 'AQ.'-prefixed auth key's bound service account had been
+    deleted, producing 401 UNAUTHENTICATED / ACCESS_TOKEN_TYPE_UNSUPPORTED on every call."""
+
+
 class _StubModel:
     def __init__(
         self, fail_with_quota_error: bool = False, fail_with_other_error: bool = False,
         fail_wrapped: bool = False, fail_transient_times: int = 0,
+        fail_with_dead_key_error: bool = False, fail_dead_key_wrapped: bool = False,
     ):
         self.fail_with_quota_error = fail_with_quota_error
         self.fail_with_other_error = fail_with_other_error
         self.fail_wrapped = fail_wrapped
         self.fail_transient_times = fail_transient_times
+        self.fail_with_dead_key_error = fail_with_dead_key_error
+        self.fail_dead_key_wrapped = fail_dead_key_wrapped
         self.calls = 0
 
     def invoke(self, messages):
@@ -49,6 +59,19 @@ class _StubModel:
                 )
             except APIError as inner:
                 raise _WrappedQuotaError("Error calling model") from inner
+        if self.fail_with_dead_key_error:
+            raise APIError(
+                code=401,
+                response_json={"error": {"status": "UNAUTHENTICATED", "message": "bound service account is deleted"}},
+            )
+        if self.fail_dead_key_wrapped:
+            try:
+                raise APIError(
+                    code=401,
+                    response_json={"error": {"status": "UNAUTHENTICATED", "message": "bound service account is deleted"}},
+                )
+            except APIError as inner:
+                raise _WrappedDeadKeyError("Error calling model") from inner
         if self.fail_with_other_error:
             raise APIError(code=400, response_json={"error": {"status": "INVALID_ARGUMENT", "message": "bad request"}})
         if self.calls <= self.fail_transient_times:
@@ -121,6 +144,63 @@ try:
 except APIError as exc:
     assert exc.code == 400, f"expected the original 400 to propagate unchanged, got {exc.code}"
     assert never_reached.calls == 0, "expected rotation to NOT trigger on a non-quota error"
+
+print(
+    "\n=== _RotatingChatModel: rotates PAST a dead (401) key to a working fallback -- the real"
+    "\n    scenario this exists for: a Google 'AQ.' auth key whose bound service account was"
+    "\n    deleted, with a paid OpenRouter overflow model appended after it ==="
+)
+dead_key_model = _StubModel(fail_with_dead_key_error=True)
+overflow_model = _StubModel()
+dead_key_rotator = _RotatingChatModel([dead_key_model, overflow_model])
+dead_key_result = dead_key_rotator.invoke("hi")
+assert dead_key_result == "ok from stub (calls=1)", (
+    f"expected rotation to reach the working overflow model, got {dead_key_result!r}"
+)
+assert dead_key_model.calls == 1 and overflow_model.calls == 1, (
+    "expected exactly one attempt against the dead key before rotating"
+)
+
+print(
+    "\n=== _RotatingChatModel: a dead key stays skipped on the NEXT call too (does not retry"
+    "\n    every COOLDOWN_SECONDS the way a quota error does -- a broken credential doesn't"
+    "\n    self-heal, so retrying it wastes a call every time) ==="
+)
+dead_key_result_2 = dead_key_rotator.invoke("hi again")
+assert dead_key_result_2 == "ok from stub (calls=2)", dead_key_result_2
+assert dead_key_model.calls == 1, (
+    f"expected the dead key to still be skipped on a second call, got {dead_key_model.calls} attempts"
+)
+
+print("\n=== _RotatingChatModel: rotates on a REAL-SHAPED wrapped 401 (langchain's wrapping) ===")
+wrapped_dead_key_model = _StubModel(fail_dead_key_wrapped=True)
+wrapped_overflow_model = _StubModel()
+wrapped_dead_key_rotator = _RotatingChatModel([wrapped_dead_key_model, wrapped_overflow_model])
+wrapped_dead_key_result = wrapped_dead_key_rotator.invoke("hi")
+assert wrapped_dead_key_result == "ok from stub (calls=1)", wrapped_dead_key_result
+
+print("\n=== _RotatingChatModel: every key dead re-raises the last 401 (nothing left to fall back to) ===")
+all_dead = _RotatingChatModel([_StubModel(fail_with_dead_key_error=True), _StubModel(fail_with_dead_key_error=True)])
+try:
+    all_dead.invoke("hi")
+    raise AssertionError("expected an APIError when every key is dead")
+except APIError as exc:
+    assert exc.code == 401, f"expected the 401 to propagate once nothing is left, got {exc.code}"
+
+print("\n=== _is_dead_key_error: detects a 401 directly, via __cause__, and rejects unrelated errors ===")
+assert _is_dead_key_error(
+    APIError(code=401, response_json={"error": {"status": "UNAUTHENTICATED", "message": "x"}})
+), "expected a direct 401 to be detected"
+wrapped_401 = _WrappedDeadKeyError("outer")
+try:
+    raise APIError(code=401, response_json={"error": {"status": "UNAUTHENTICATED", "message": "x"}})
+except APIError as inner:
+    wrapped_401.__cause__ = inner
+assert _is_dead_key_error(wrapped_401), "expected a wrapped 401 to be detected via __cause__"
+assert not _is_dead_key_error(ValueError("unrelated")), "expected a plain unrelated error to not match"
+assert not _is_dead_key_error(
+    APIError(code=429, response_json={"error": {"status": "RESOURCE_EXHAUSTED", "message": "x"}})
+), "expected a quota error to NOT also match as a dead-key error"
 
 print("\n=== _is_quota_error: detects a 429 wrapped in another exception's __cause__ chain ===")
 try:
