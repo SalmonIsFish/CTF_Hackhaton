@@ -2,7 +2,7 @@
 
 **Category**: Web (IPv6-mapped SSRF → Python format-string injection → JWT forge)
 **Status**: ✅ **SOLVED LIVE** (2026-08-03) against `154.57.164.67:30928`.
-**Flag**: `HTB{ddd7ceeb7dae10f4f2f1ed1b28b1f753}`
+**Flag**: `HTB{REDACTED}`
 The intended DNS-rebinding path is documented below, but the **IPv6 shortcut works and needs no
 infra** — see "Live solve" at the bottom for the one detail that decided it.
 

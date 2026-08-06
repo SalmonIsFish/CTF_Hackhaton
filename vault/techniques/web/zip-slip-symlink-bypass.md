@@ -54,7 +54,7 @@ traversal depths, with an oracle check (attempted to overwrite the served `stati
 Symlink entries were not revalidated. Combined with [[cookie-trust-auth-bypass]] and
 [[predictable-session-id-timestamp-hash]] to plant a forged admin session file at
 `/tmp/sessions/noexist/<sessionid>` where both the Go Fiber session middleware and the Node
-SSO backend would read it. Flag captured: `HTB{S0m3tIm3s_Its_J4usT_A_B!G_M3ss}`.
+SSO backend would read it. Flag captured: `HTB{REDACTED}`.
 
 **Full run write-up**: see `evals/practice_runs.md`, "Real HackTheBox target — 'Desires'".
 

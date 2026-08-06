@@ -30,7 +30,7 @@ letting you smuggle a value past validation that the backend actually acts on.
 
 ## Source challenge
 
-HackTheBox "Space Explorer" (Web, Very Easy) — flag `HTB{C0SM1C-BYP4SS}`. Solved by pasting the
+HackTheBox "Space Explorer" (Web, Very Easy) — flag `HTB{REDACTED}`. Solved by pasting the
 challenge's own Go "Sender" proxy + Python "Receiver" source into the prompt; the agent
 correctly identified "conflicting JSON keys" as the right attack category from source alone but
 initially missed the specific case-insensitivity mechanism (tried duplicate-same-case-key

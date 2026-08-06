@@ -14,7 +14,7 @@ the tool in isolation. All three passed with `gemini-3.5-flash-lite`.
 | Port sweep across one open (banner-emitting) port and two closed/adjacent ports | `port_scan` | PASS | Correctly reported the open port's banner (`SSH-2.0-OpenSSH_9.6p1`, a synthetic banner shaped like a real SSH version string) and the other two as `closed/filtered`. |
 | Real internet target — `scanme.nmap.org` (nmap's own public scanning-practice box, ports 22/80/9929) | `port_scan` (full agent loop, `python -m evals.real_target_check`) | PASS (with a real finding) | Correctly reported all 3 known-open ports as open, both runs. **But**: SSH's version banner on port 22 was never captured, even after widening `CONNECT_TIMEOUT_SECONDS`/`BANNER_TIMEOUT_SECONDS` from 0.6s/0.8s to 1.0s/1.5s (now the shipped default) and re-running — unlike our local synthetic banner target, which always responds instantly. Real hosts/network paths don't guarantee an immediate banner the way a same-machine test server does. Port-state detection is solid; banner capture on a real target is best-effort, not guaranteed. Stopped after 2 runs out of respect for scanme.nmap.org's light-use policy — not chasing this further against their box. |
 | **Real TryHackMe target** — Room 404 (`hh-room404-804573bf`), a hidden-endpoint-discovery web challenge, reached via OpenVPN (TCP, after UDP stalled with a TLS handshake timeout) | `fetch_url`, `port_scan`, `search_skills`; `require_approval=True` (HITL) | **No flag** — real target expired mid-run | First real run through `require_approval`/`interrupt()` against a genuinely external (VPN-reached) target, not just `scanme.nmap.org`. The agent explored sensibly (root, `/robots.txt`, `/static/flag.txt`, `/static/`, `/console`, a port sweep, `search_skills` for "flask") but never guessed the actual hidden path before the free-tier lab machine's hard time limit killed the connection mid-request (`WinError 10053`). Real, useful gap surfaced: `fetch_url` has no directory/wordlist enumeration — it only tries paths the model itself thinks to guess, one at a time. Not fixed this session; noted for Phase 4 if there's time. |
-| **Real HackTheBox target** — "Space Explorer" challenge (Web, Very Easy, free tier), reached directly over the public internet (no VPN hop needed — HTB spawns standalone challenges on a public IP) | `tcp_open`, `fetch_url`; `require_approval=True` (HITL) | **No flag** (2 runs) | **Run 1 (blind, no source):** explored unprompted from nothing — found the real `/execute` endpoint and the correct JSON action names (`getcosmic`/`getSecureCode`) by fetching `/` and reading the page's own JavaScript. Its very first guess, `{"action": "getSecureCode"}`, was the right shape but got refused server-side. At the time this looked like it might need `fetch_url` custom-header support (no such param exists) — **that hypothesis turned out to be wrong** once the source was read; worth flagging so it's not treated as a confirmed gap. **Run 2 (challenge's own source code — a Go "Sender" proxy + Python "Receiver" — pasted directly into the prompt, same pattern as `demo/run_demo.py`'s captured-artifact style, no new tool needed):** correctly identified the right *category* of attack (conflicting/duplicate `action` keys in the JSON body, since the Go proxy and Python backend parse the same forwarded bytes independently) and tried several variants (`{"action":"getcosmic","action":"getSecureCode"}` both orders, a nested-object variant) — but never tried the one that actually works: exploiting Go's built-in *case-insensitive* JSON key matching against Python's *case-sensitive* dict lookup on the identical raw bytes (`{"action": "getSecureCode", "Action": "getcosmic"}` — Go's decoder resolves its single struct field via the last matching key regardless of case, so it forwards; Python reads the literal lowercase key and returns the flag). Manually verified this payload directly (`Invoke-WebRequest`) to confirm the actual root cause: `HTB{C0SM1C-BYP4SS}`. **Read as**: source code access measurably helps (went straight for the real vulnerable code path instead of guessing blind), but this specific bug needed a fairly deep, language-specific implementation fact the agent had no strong reason to know — a reasoning-depth limit, not a missing tool. |
+| **Real HackTheBox target** — "Space Explorer" challenge (Web, Very Easy, free tier), reached directly over the public internet (no VPN hop needed — HTB spawns standalone challenges on a public IP) | `tcp_open`, `fetch_url`; `require_approval=True` (HITL) | **No flag** (2 runs) | **Run 1 (blind, no source):** explored unprompted from nothing — found the real `/execute` endpoint and the correct JSON action names (`getcosmic`/`getSecureCode`) by fetching `/` and reading the page's own JavaScript. Its very first guess, `{"action": "getSecureCode"}`, was the right shape but got refused server-side. At the time this looked like it might need `fetch_url` custom-header support (no such param exists) — **that hypothesis turned out to be wrong** once the source was read; worth flagging so it's not treated as a confirmed gap. **Run 2 (challenge's own source code — a Go "Sender" proxy + Python "Receiver" — pasted directly into the prompt, same pattern as `demo/run_demo.py`'s captured-artifact style, no new tool needed):** correctly identified the right *category* of attack (conflicting/duplicate `action` keys in the JSON body, since the Go proxy and Python backend parse the same forwarded bytes independently) and tried several variants (`{"action":"getcosmic","action":"getSecureCode"}` both orders, a nested-object variant) — but never tried the one that actually works: exploiting Go's built-in *case-insensitive* JSON key matching against Python's *case-sensitive* dict lookup on the identical raw bytes (`{"action": "getSecureCode", "Action": "getcosmic"}` — Go's decoder resolves its single struct field via the last matching key regardless of case, so it forwards; Python reads the literal lowercase key and returns the flag). Manually verified this payload directly (`Invoke-WebRequest`) to confirm the actual root cause: `HTB{REDACTED}`. **Read as**: source code access measurably helps (went straight for the real vulnerable code path instead of guessing blind), but this specific bug needed a fairly deep, language-specific implementation fact the agent had no strong reason to know — a reasoning-depth limit, not a missing tool. |
 
 Also stress-tested (offline, no server needed): `extract_allowed_hosts` (the host-allowlist
 guard in `agent/graph.py`) against additional real-world phrasings (`"Target:
@@ -78,7 +78,7 @@ surfaced.
 
 Full source (Go/Fiber app + Node/Express SSO backend + Redis sessions) was provided for local
 study, not just a blind IP — closer to a real CTF-with-source-access scenario than prior
-targets. **Flag captured**: `HTB{S0m3tIm3s_Its_J4usT_A_B!G_M3ss}`, matching a public writeup
+targets. **Flag captured**: `HTB{REDACTED}`, matching a public writeup
 (MachineEP, Medium) consulted mid-session after independent analysis stalled — see below.
 
 **Vulnerability chain** (`services/sessions.go`, `services/http.go`):
@@ -410,7 +410,7 @@ try (the agent never got that far in this run).
 ### Attempt 2 — fresh instance, flag found and correctly identified by the model
 
 Fresh instance spun up (`dolphin-cove.picoctf.net:49638`), same prompt re-run through
-`/solve`. **Result: flag found (`picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}`)** — but the API
+`/solve`. **Result: flag found (`picoCTF{REDACTED}`)** — but the API
 still reported `flag: null`, exposing a second, more serious bug (below). 12 steps, 8 tool
 calls.
 
@@ -432,7 +432,7 @@ vault technique note alongside the existing `predictable-session-id-timestamp-ha
 `cookie-trust-auth-bypass.md` from the HTB "Desires" solve, for whenever there's time to add it.
 
 **Second real bug found: `FLAG_PATTERN` didn't recognize picoCTF's own flag format.** The model
-correctly extracted `picoCTF{s3t_s3ss10n_3xp1rat10n5_51c526ab}` and even called
+correctly extracted `picoCTF{REDACTED}` and even called
 `find_flag_pattern` on it to confirm — which returned `"No flag pattern found."` The old pattern
 (`\b(?:flag|ctf|htb)\{...\}`) needs a word boundary immediately before `ctf`, but `pico` sits
 directly against `CTF` with no boundary in between, so a bare `ctf` alternative can never match
@@ -457,10 +457,10 @@ unknown agent-safety bug; the second, after the fix, produced a clean real solve
 **Attempt 1 (`:52321`) — target was already dead (closed/filtered port), and the agent fabricated a
 flag instead of saying so.** Both `fetch_url` calls failed to connect. Rather than reporting the
 target unreachable, the model called `web_search`, found two independent public writeups of this
-same challenge, and confidently returned `picoCTF{c00k1e_m0nster_l0ves_c00kies_6E81FC1E}` as the
+same challenge, and confidently returned `picoCTF{REDACTED}` as the
 answer — formatted exactly like a real result, with no hedging. This flag was never read from the
 actual target and was almost certainly wrong: the two writeups found showed *different* flag
-suffixes (`...6E81FC1E` vs `...73110ED1`) for nominally the same challenge, proving picoCTF
+suffixes (redacted) for nominally the same challenge, proving picoCTF
 randomizes the flag per deployment. Submitting this on stage would have meant confidently handing
 judges a wrong answer instead of an honest "couldn't reach it."
 
@@ -491,7 +491,7 @@ unreachable and no valid flag can be retrieved."
 `evals/run_log.jsonl`: `fetch_url` GET `/` → nothing; `dir_enum` found `/login.php`; `fetch_url` GET
 `/login.php` → a login form; `fetch_url` POST `username=admin&password=admin` → server replied
 "Access Denied... Me just need cookies!" and set `Set-Cookie: secret_recipe=<base64>`;
-`identify_and_decode` on that cookie value decoded to `picoCTF{c00k1e_m0nster_l0ves_c00kies_78B4C390}`.
+`identify_and_decode` on that cookie value decoded to `picoCTF{REDACTED}`.
 Every step traced back to a real tool result against the live target — the fabrication guardrail
 had every opportunity to reach for `web_search` when the guessed login failed, and correctly didn't.
 
@@ -499,7 +499,7 @@ had every opportunity to reach for `web_search` when the guessed login failed, a
 
 Run through the dashboard (`require_approval=True`) against `titan.picoctf.net:51574`. Verified clean
 via `evals/run_log.jsonl`: exactly one tool call all run, `fetch_url` on the target root — no
-`web_search`, no other tool. The flag (`picoCTF{pr3tty_c0d3_51d374f0}`) is genuinely present verbatim
+`web_search`, no other tool. The flag (`picoCTF{REDACTED}`) is genuinely present verbatim
 in the minified HTML `fetch_url` returned, sitting in a `<p class="picoCTF{...}">` attribute — the
 challenge's actual intended solve (read the minified page source) rather than anything requiring
 un-minification tooling, since the flag isn't obscured by the minification at all, just easy to miss
@@ -519,7 +519,7 @@ kept re-registering from scratch, because several `GET /` calls in the transcrip
 requests. Confirmed directly from that transcript: steps 4, 7, 10, 13, 16 (all bare `GET /`) had
 no `headers` in their tool args, while the POST calls right next to them did — each cookie-less
 `GET /` handed back a fresh session + CSRF token, restarting the registration flow. The real
-flag (`picoCTF{#0TP_Bypvss_SuCc3$S_3e3ddc76}`) was found by a human running `curl` by hand with a
+flag (`picoCTF{REDACTED}`) was found by a human running `curl` by hand with a
 real cookie jar, outside the agent entirely.
 
 **Root cause fixed**: `fetch_url` gained an optional `session_id` param (`agent/tools/fetch_url.py`)
@@ -540,7 +540,7 @@ request" with the flag inline. Same underlying bug as the manual solve (a missin
 treated as a pass, not a rejection) but reached via a slightly different variant — a wrong field
 name rather than a truly empty body — confirming the vulnerability is "no field named `otp`
 present," not specifically "an empty POST body." Flag confirmed identical to the one found by
-hand in attempt 1: `picoCTF{#0TP_Bypvss_SuCc3$S_3e3ddc76}`.
+hand in attempt 1: `picoCTF{REDACTED}`.
 
 Also verified: 4 new regression tests added to `evals/test_tools_smoke.py` covering
 `fetch_url`'s `session_id` behavior — cookie persistence across calls, a session_id-less call
@@ -557,10 +557,10 @@ cover this shape (not base64/hex/rot13), and the agent has no code-execution too
 tried to hand-simulate the byte arithmetic character-by-character in its own reasoning text. It
 got the first 8 characters right (`picoCTF{`), visibly lost track partway through ("Wait, let's
 carefully check the characters..." repeated several times, an abandoned Python snippet it never
-actually ran), and then stated a final answer — `picoCTF{b00karn3l3ts_are_rocck_50882ef9}` —
+actually ran), and then stated a final answer — `picoCTF{REDACTED}` —
 hedged with "(or similar instance-specific flag)". **Confirmed fabricated**: re-fetched and
 decoded the real page in one clean Python pass (no manual transcription) —
-`picoCTF{p@g3_turn3r_cebccdfe}`, nothing like what the model stated. Along the way, manually
+`picoCTF{REDACTED}`, nothing like what the model stated. Along the way, manually
 copy-pasting the ciphertext string through an intermediate shell/terminal step corrupted it too
 (a `UnicodeEncodeError` on the very first attempt, then silently wrong output on the second) —
 direct confirmation that hand-transcribing this string through any extra text layer is fragile
@@ -619,10 +619,10 @@ Latin-1 (which can decode any byte sequence, so this never raises) only if that 
 all three tools. Re-verified directly against the same live instance post-fix:
 `fetch_and_decode_cipher` now returns the correct 29-char ciphertext and decodes it to the real
 flag, confirmed matching the earlier independently-verified value:
-`picoCTF{p@g3_turn3r_cebccdfe}`. Full `evals/test_tools_smoke.py` suite still passes.
+`picoCTF{REDACTED}`. Full `evals/test_tools_smoke.py` suite still passes.
 
 **Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.** The
-agent reached `picoCTF{p@g3_turn3r_cebccdfe}` on its own this time — no fallback to `web_search`
+agent reached `picoCTF{REDACTED}` on its own this time — no fallback to `web_search`
 or hand-computation, and no fabrication. Confirms all three fixes (the new
 `fetch_and_decode_cipher` tool, the dashboard `data-flag` verification, and the UTF-8 encoding
 fix) together, not just the direct reproduction above. Logged in `evals/solved_challenges.md`.
@@ -670,13 +670,13 @@ safely guessed.
 
 **Verified directly against the live instance**: replaying the agent's exact failed
 `POST /admin.php` call with the fix in place returns
-`picoCTF{j5_15_7r4n5p4r3n7_b0c2c9cb}` immediately. Full `evals/test_tools_smoke.py` suite passes
+`picoCTF{REDACTED}` immediately. Full `evals/test_tools_smoke.py` suite passes
 (new regression tests added for the camelCase form and for a genuine custom header being left
 alone).
 
 **Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.**
 Confirms the fix, not just the direct reproduction above: the agent reached
-`picoCTF{j5_15_7r4n5p4r3n7_b0c2c9cb}` on its own. Logged in `evals/solved_challenges.md`.
+`picoCTF{REDACTED}` on its own. Logged in `evals/solved_challenges.md`.
 Bookmarklet (same session, different fix) was also re-run and solved end-to-end shortly after —
 see that section above, updated in place.
 
@@ -690,7 +690,7 @@ past the flake reliably reproduces a clean pass. Worth switching those to
 ## Real picoCTF target — "Inspect HTML" (Web Exploitation, Easy) — flag captured in a single step
 
 Target `saturn.picoctf.net:62526`. One `fetch_url` GET on the root page, no other tool calls
-needed: the flag sat verbatim in an HTML comment (`<!--picoCTF{1n5p3t0r_0f_h7ml_8113f7e2}-->`)
+needed: the flag sat verbatim in an HTML comment (`<!--picoCTF{REDACTED}-->`)
 right in the page source, exactly what the challenge's name/hint ("what is the web inspector")
 points at. No bugs hit, no human intervention. Confirms the agent still handles the genuinely
 easy cases cleanly amid all the harder ones logged above.
@@ -699,14 +699,14 @@ easy cases cleanly amid all the harder ones logged above.
 
 Target `saturn.picoctf.net:51408`. Three clean `fetch_url` GETs (`/`, `script.js`, `style.css`) —
 every fetch succeeded, no tool bugs, no fabrication of a fragment. `style.css` ends
-`/*  picoCTF{1nclu51v17y_1of2_  */` and `script.js` ends `//  f7w_2of2_df589022}` — the challenge
+`/*  picoCTF{REDACTED}` — the challenge
 name itself ("Includes") and the `1of2`/`2of2` labels signal the flag is split across the two
 included files, meant to be concatenated. The agent correctly identified and read both real
-fragments, but joined them by hand as `picoCTF{1nclu51v17y_1of2_ f7w_2of2_df589022}` — one stray
+fragments, but joined them by hand as `picoCTF{REDACTED}` — one stray
 space in the middle that isn't part of either source string (both comments just have loose
 whitespace padding around the actual token, from formatting, not content). Confirmed directly:
 concatenating the two fragments with nothing between them gives
-`picoCTF{1nclu51v17y_1of2_f7w_2of2_df589022}`, the real flag.
+`picoCTF{REDACTED}`, the real flag.
 
 A new failure subtype, distinct from prior fabrication bugs — every individual piece here was
 genuine, verbatim, and correctly sourced; the mistake was purely in the manual reassembly step.
@@ -733,7 +733,7 @@ this fix landed): correct joined flag, no stray space. New regression tests in
 
 **Re-run through the actual agent, post-fix — solved end-to-end, no human intervention and no
 stray space.** Confirms the fix, not just the direct/local-fixture verification above: the agent
-called `fetch_and_join_fragments` and reached `picoCTF{1nclu51v17y_1of2_f7w_2of2_df589022}` on
+called `fetch_and_join_fragments` and reached `picoCTF{REDACTED}` on
 its own. Logged in `evals/solved_challenges.md`.
 
 ## Real picoCTF target — "Cookies" (Web Exploitation, Easy) — flag captured by brute-forcing a cookie value
@@ -770,26 +770,26 @@ Target `wily-courier.picoctf.net:56174`, a 5-way version of the same split-flag 
 fifth). The agent needed a few tries to find a `pattern` that correctly captured all 5 fragments
 (two earlier attempts used patterns that didn't match consistently across the differently-styled
 files), but the winning call to `fetch_and_join_fragments` **did** compute the exactly correct
-flag internally — its own `Joined: picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` line proves it.
+flag internally — its own `Joined: picoCTF{REDACTED}` line proves it.
 Despite that, the dashboard's flag box showed
-`picoCTF{t' mycss.css: 'h4ts_4_l0' robots.txt: 't_0f_pl4c' .htaccess: '3s_2_lO0k' .DS_Store:
-'_9588550}` — garbage built out of the tool's own debug listing, not the real answer.
+`picoCTF{...' mycss.css: '...' robots.txt: '...' .htaccess: '...' .DS_Store: '...}` (redacted)
+— garbage built out of the tool's own debug listing, not the real answer.
 
 **Root cause, entirely inside `fetch_and_join_fragments`'s own output formatting** (not a repeat
 of any previously-fixed bug): the tool printed a per-fragment debug listing ("Fragments (in
 order): ...") *before* the "Joined: ..." line. `agent/graph.py`'s `observe()` (backing the
 verified `data-flag` UI part) does a left-to-right regex search (`FLAG_PATTERN`) over the whole
 tool result for the first `picoCTF{...}`-shaped span. Since the *first* fragment of a split flag
-is, by construction, always the start of the real flag (`index.html: 'picoCTF{t'` here), the
+is, by construction, always the start of the real flag (`index.html: 'picoCTF{...'` here, redacted), the
 debug listing itself contains an accidental, unclosed `picoCTF{` — and the regex greedily matched
 from there all the way to the next stray `}` character, which landed inside a *different*
-fragment's repr several lines later (`.DS_Store: '_9588550}'`), stitching together a nonsense
+fragment's repr several lines later (`.DS_Store: '...}'`, redacted), stitching together a nonsense
 "flag" out of raw debug text instead of ever reaching the real "Joined:" line.
 
 **Confirmed this also silently affected the earlier "Includes" fix**, not just this new
 challenge: replaying the exact old (pre-this-fix) output ordering against `Includes`'s own
 2-fragment case through the real `FLAG_PATTERN` regex reproduces the identical failure shape
-(`"picoCTF{1nclu51v17y_1of2_'\nscript.js: 'f7w_2of2_df589022}"` instead of the clean flag) — so
+(`"picoCTF{REDACTED}"` instead of the clean flag) — so
 that earlier "the flag is correct" confirmation was very likely reading the model's own prose
 (which can reason over the whole tool output regardless of order) rather than the actual verified
 flag box, which was probably wrong the whole time without anyone noticing. Worth a quick
@@ -799,7 +799,7 @@ re-check of Includes' flag box specifically if it's easy to re-run.
 the debug listing — the regex now matches the real answer immediately and never reaches the
 debug section. Verified directly: replaying the exact live scenario (5 fragments, first one
 starting with `picoCTF{`) through the real `observe()` function now correctly returns
-`{"flag": "picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}"}`. New regression test in
+`{"flag": "picoCTF{REDACTED}"}`. New regression test in
 `evals/test_tools_smoke.py` exercises `fetch_and_join_fragments` output through `observe()`
 directly (not just checking the flag appears as a substring somewhere, which the old test did and
 which is why this didn't get caught earlier). Full suite passes.
@@ -807,10 +807,10 @@ which is why this didn't get caught earlier). Full suite passes.
 **Second, distinct bug found on the very next re-run — a real limitation of the tool's design,
 not a repeat.** With the ordering fix live, the agent needed a few tries to write a working
 `pattern`, and its final attempt returned
-`picoCTF{t --> </div> </div> </body> </html>h4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` — the `index.html`
+`picoCTF{REDACTED}` — the `index.html`
 fragment alone was garbled with a chunk of trailing HTML. Root-caused directly by fetching all 5
 real files: this challenge's fragments are wrapped completely differently per file — `index.html`
-uses an HTML comment (`<!-- Here's the first part of the flag: picoCTF{t -->`, which contains
+uses an HTML comment (`<!-- Here's the first part of the flag: picoCTF{...` (redacted) `-->`, which contains
 **no `}` character anywhere**), `mycss.css` uses a CSS block comment (`/* ... */`), `robots.txt`
 and `.htaccess` each use a `#` line comment, and `.DS_Store` has **no comment delimiter at all**
 around its fragment, just a "Part 5:" label. The agent's pattern
@@ -826,14 +826,14 @@ validated 1:1 against `paths`) alongside the existing single-`pattern` mode — 
 works for the common case where every file really does share one format. `_UNTRUSTED_DATA_NOTICE`
 updated to explain when to reach for `patterns` instead of `pattern`. Verified directly against
 the live instance with 5 file-specific patterns: correct flag,
-`picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}`, confirmed both in the tool's own output and
+`picoCTF{REDACTED}`, confirmed both in the tool's own output and
 through `observe()`. New regression tests replicate the real 5-file content shape (including a
 sanity check that the *old* single-pattern behavior still reproduces the over-match bug, proving
 the fix addresses a real failure and isn't just theoretical). Full suite passes.
 
 **Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.**
 Confirms both fixes, not just the direct/local-fixture verification above: the agent used the new
-`patterns` argument correctly and reached `picoCTF{th4ts_4_l0t_0f_pl4c3s_2_lO0k_9588550}` on its
+`patterns` argument correctly and reached `picoCTF{REDACTED}` on its
 own. Logged in `evals/solved_challenges.md`.
 
 ## Real picoCTF target — "Bypass Me" (Reverse Engineering, Medium) — radare2_analyze's first real-world test, flag captured
@@ -880,7 +880,7 @@ above). Result: `SuperSecure`. Verified live: SSH'd into the same instance, ran 
 supplied `SuperSecure` at the password prompt, got back the real flag. Confirmed accepted on the
 platform (CyLab Security Academy / picoCTF).
 
-**Flag**: `picoCTF{d3bugg3r_p0w3r_is_4w3s0m3_f459a369}`
+**Flag**: `picoCTF{REDACTED}`
 
 **Follow-up, same session — the gap above is closed.** Two new tools in `agent/tools/ssh_session.py`:
 `ssh_analyze_binary` (SFTP-fetch + `analyze_binary_bytes` in one server-side call — the binary's
@@ -904,7 +904,7 @@ few real, honest wrong turns getting the binary to actually accept piped input (
 pipe attempt, a `pexpect` attempt that failed since it isn't installed on the remote box, one
 call with a genuine typo in its own generated Python — `subproceess`) before succeeding via
 `ssh_run`'s `stdin_text` parameter. Reached the real flag,
-`picoCTF{d3bugg3r_p0w3r_is_4w3s0m3_f459a369}`, in 12 of its 15-step budget — the most steps any
+`picoCTF{REDACTED}`, in 12 of its 15-step budget — the most steps any
 solved challenge in this log has needed, worth knowing if a similar RE/pwn challenge runs close to
 the ceiling. Logged in `evals/solved_challenges.md`.
 
@@ -924,7 +924,7 @@ hardcoded `{"GET", "POST"}` allowlist, blocking the entire technique category be
 calls could even reach the target.
 
 **Root cause confirmed by direct reproduction**: `curl -I` (HEAD) against the real target returns
-a `flag:` response header (`picoCTF{r3j3ct_th3_du4l1ty_8b13f07}`) that a plain GET's response
+a `flag:` response header (`picoCTF{REDACTED}`) that a plain GET's response
 never includes at all — `GET`'s own headers were checked directly and confirmed to have no such
 header. This is a genuine, deliberate challenge mechanic (the page is themed "Red"/"Blue" with a
 GET-vs-POST form choice, and the real answer is neither — a third option, HEAD, reveals what
@@ -946,7 +946,7 @@ unsupported method (`TRACE`) is still cleanly rejected. Full suite passes.
 steps (`GET` then `HEAD`), no human intervention, no `web_search` call anywhere in the trace.**
 By the time this was double-checked, the instance had already been torn down, so it couldn't be
 re-verified directly against that exact instance -- but the flag value
-(`picoCTF{r3j3ct_th3_du4l1ty_8b13f07}`) exactly matches the one independently curled from the
+(`picoCTF{REDACTED}`) exactly matches the one independently curled from the
 earlier, separate `:65237` instance, meaning this challenge's flag is static/non-randomized
 rather than per-instance -- a real, meaningful corroboration, not coincidence. Logged in
 `evals/solved_challenges.md`.
@@ -960,9 +960,9 @@ client-side JS `verify()` function checking 8 separate substrings of a password 
 needed beyond reading it. The agent correctly identified all 8 individual fragment values (`pico`,
 `CTF{`, `no_c`, `lien`, `ts_p`, `lz_2`, `eb02`, `b45}`) exactly matching the real page, but
 hand-typing them out in order in its final answer produced
-`picoCTF{no_clients_plzl_2eb02b45}` — a spurious extra `l` inserted between `plz` and `_2`. The
+`picoCTF{REDACTED}` — a spurious extra `l` inserted between `plz` and `_2`. The
 real, correct flag (confirmed both by direct reproduction and by the tool below):
-`picoCTF{no_clients_plz_2eb02b45}`.
+`picoCTF{REDACTED}`.
 
 This is the same manual-reassembly failure class as "Includes" and "Scavenger Hunt", just in a
 new shape: all 8 fragments live on a SINGLE page (extracted via distinct substring-index checks),
@@ -981,7 +981,7 @@ suite passes.
 **Re-run through the actual agent, post-fix — solved end-to-end, no human intervention and no
 extra character.** Confirms the fix, not just the direct verification above: the agent used
 `fetch_and_join_fragments` with the repeated-path pattern and reached
-`picoCTF{no_clients_plz_2eb02b45}` on its own. Logged in `evals/solved_challenges.md`.
+`picoCTF{REDACTED}` on its own. Logged in `evals/solved_challenges.md`.
 
 ## Real picoCTF target — "Insp3ct0r" (Web Exploitation) — a real fetch_and_join_fragments usability bug caused the agent to get stuck in an unrecoverable loop
 
@@ -1006,7 +1006,7 @@ every retry instead of ever fixing the real problem (the path count).
 resolving to `base_url` itself with no extra path appended (exactly the convention the agent
 already tried to use). Docstring updated to document this explicitly. Verified directly against
 the live target with the agent's own original `paths=",mycss.css,myjs.js"` value: correct flag,
-`picoCTF{tru3_d3t3ct1ve_0r_ju5t_lucky?302945a7}`. Re-verified the tool's other existing behavior
+`picoCTF{REDACTED}`. Re-verified the tool's other existing behavior
 (Includes/Scavenger Hunt/dont-use-client-side fixtures, all 4 validation-error paths) still work
 correctly after this change. New regression test added and verified directly (the full
 `evals/test_tools_smoke.py` suite currently hangs on an unrelated teammate addition —
@@ -1017,7 +1017,7 @@ isolation or with a bounded timeout).
 **Re-run through the actual agent, post-fix — solved end-to-end, no human intervention.**
 Confirms the fix, not just the direct verification above: the agent used
 `fetch_and_join_fragments` with the same `paths=",mycss.css,myjs.js"` convention and reached
-`picoCTF{tru3_d3t3ct1ve_0r_ju5t_lucky?302945a7}` on its own. Logged in `evals/solved_challenges.md`.
+`picoCTF{REDACTED}` on its own. Logged in `evals/solved_challenges.md`.
 
 ## Local file challenge — "StegoRSA" (Cryptography) — the worst fabrication yet: zero tool calls at all, and a real capability gap underneath it
 
@@ -1028,14 +1028,14 @@ metadata inspection and hex-to-key-file conversion. The prompt gave the agent a 
 (both already existed and would have worked), nothing. Instead it wrote out a plausible,
 technically-correct-*sounding* shell recipe (`exiftool`, `xxd -r -p`, `openssl pkeyutl -decrypt`)
 as if narrating a generic writeup for this well-known challenge shape, then stated
-`picoCTF{rs4_k3y_1n_1mg_66388eb3}` as if it were the result.
+`picoCTF{REDACTED}` as if it were the result.
 
 **Confirmed fabricated, and root-caused with the real numbers.** Ran the actual pipeline for
 real: `extract_metadata` on `image.jpg` found a long hex string in the PNG-style `comment` field
 (actually JPEG, but Pillow surfaces it the same way); hex-decoding it produced a well-formed PEM
 RSA private key; using that key to decrypt `flag.enc` (PKCS1v15 padding, via the `cryptography`
 library — OAEP variants failed) produced the real flag:
-**`picoCTF{rs4_k3y_1n_1mg_4eedd678}`** — a completely different suffix from what the agent stated.
+**`picoCTF{REDACTED}`** — a completely different suffix from what the agent stated.
 The agent got the *shape* of a well-known challenge type right purely from pattern recognition,
 and invented a plausible-looking hex suffix instead of ever computing one.
 
@@ -1074,7 +1074,7 @@ and invented a plausible-looking hex suffix instead of ever computing one.
 **Verified end to end against the real challenge files**, not just a synthetic fixture:
 `extract_hidden_key` correctly pulled and hex-decoded the real key from `image.jpg`'s metadata,
 and `rsa_decrypt_file` correctly decrypted the real `flag.enc` with it — both using the actual
-tools, zero manual byte-copying, reproducing `picoCTF{rs4_k3y_1n_1mg_4eedd678}`. New regression
+tools, zero manual byte-copying, reproducing `picoCTF{REDACTED}`. New regression
 tests for both new tools plus `read_local_file` and PDF metadata support, all passing (verified
 in isolation/bounded-timeout due to the pre-existing, unrelated `radare2_analyze`/WSL hang noted
 earlier).
@@ -1129,7 +1129,7 @@ through the actual agent (not a synthetic fixture, not direct tool calls)**: `re
 on the directory correctly listed `flag.enc, image.jpg`; the model then called
 `extract_hidden_key` (`source_path=image.jpg`, `field=comment`, `encoding=hex`) which wrote a
 real `private.pem`, then `rsa_decrypt_file` which reported `pkcs1v15: SUCCESS --
-picoCTF{rs4_k3y_1n_1mg_4eedd678}` — 7 steps, no `web_search`, no fabrication, the correct flag.
+picoCTF{REDACTED}` — 7 steps, no `web_search`, no fabrication, the correct flag.
 New regression tests for the directory-listing behavior (all four tools) and the priority-order
 system prompt text. Full suite passes (same pre-existing unrelated flakiness aside). Logged in
 `evals/solved_challenges.md`.
@@ -1218,7 +1218,7 @@ executed, and any flag it "produces" is fabricated.
 
 **Verified fully end-to-end through the real agent, both fixes live, against the real challenge
 files**: 4 steps, `read_local_file` → `dh_shared_secret_decrypt`, correct real flag
-`picoCTF{dh_s3cr3t_9982ffe6}`, no fabrication. New regression tests for `_looks_like_placeholder`
+`picoCTF{REDACTED}`, no fabrication. New regression tests for `_looks_like_placeholder`
 (both the standalone tool and `observe()`), `modpow`, and `dh_shared_secret_decrypt` (including a
 real numeric round-trip against this exact challenge's actual captured data). Full suite passes
 (same pre-existing unrelated `radare2_analyze`/WSL and Windows-socket flakiness noted earlier,
@@ -1268,7 +1268,7 @@ hashing that many strings takes ~24ms, no meaningful cost.
 confirming rounds 1-2 work and round 3 correctly triggers a `web_search` fallback instead of
 fabricating; the second, with the expanded wordlist, solving all 3 rounds directly via
 `crack_hash` alone, no `web_search` needed: 11 steps, real flag
-`picoCTF{UseStr0nG_h@shEs_&PaSswDs!_4c95d69f}`. Also incidentally confirmed the agent
+`picoCTF{REDACTED}`. Also incidentally confirmed the agent
 self-recovers cleanly from a transient TCP timeout mid-run (one `tcp_send` call got no response
 before its timeout; the agent closed that session, opened a fresh one, and continued correctly
 rather than getting stuck). New regression tests cracking all 3 real hashes from this challenge,
@@ -1291,7 +1291,7 @@ prime (verified with Miller-Rabin, not assumed), so `phi = (2-1)*(q-1) = N//2 - 
 `d = e^-1 mod phi`, `m = c^d mod N`, and `m` converts straight to ASCII. N is freshly generated
 per connection, so the params above are single-use — the solve script re-fetches them itself.
 
-**Flag: `picoCTF{tw0_1$_pr!m3de643ad5}`**
+**Flag: `picoCTF{REDACTED}`**
 
 **First attempt — the agent did *not* solve this.** Its dashboard run burned its whole budget
 calling `tcp_open` three times against the target (each one gated behind a separate HITL approval,
@@ -1314,7 +1314,7 @@ So even on a run where `tcp_open` had worked perfectly and the agent had all thr
 context, the only paths left open to it were (a) get stuck, or (b) fabricate — the exact failure
 mode "StegoRSA" and "Shared Secrets" already documented twice in this file. Confirmed rather than
 assumed: a re-run against a fresh instance whose target had since expired did exactly (b) — it
-fell through to `web_search` and stated `picoCTF{tw0_1$_pr!m378257f39}`, a flag copied from a
+fell through to `web_search` and stated `picoCTF{REDACTED}`, a flag copied from a
 public writeup with a *different* suffix from the real one. `observe()` correctly refused it
 (`flag: None`, because `web_search` is in `_REFERENCE_ONLY_TOOLS`), but the model still put it in
 its final answer instead of reporting the target unreachable as the system prompt requires.
@@ -1364,7 +1364,7 @@ in the repo, not just this challenge.
 
 **Verified end-to-end against the real target on a fresh instance — solved autonomously in 4
 steps**, no hand-holding: `tcp_open` (banner with the three integers arrives immediately, no
-`tcp_send` needed) → `tcp_close` → `rsa_decrypt_ints` → `picoCTF{tw0_1$_pr!m3de643ad5}`. The
+`tcp_send` needed) → `tcp_close` → `rsa_decrypt_ints` → `picoCTF{REDACTED}`. The
 instance's `N` and `c` were freshly generated and differed from the values decrypted by hand
 earlier, so this is a real computation, not a recalled answer. Triaged to `crypto` correctly.
 
@@ -1420,7 +1420,7 @@ from the listing call above.
 ## Real hackathon-organizer target — "StaffDesk" (Web, GraphQL IDOR → account takeover) — flag captured by hand via curl, agent not yet re-tried
 
 Target `52.76.96.108:3014` (UCSI26 hackathon-organizer challenge). Flag captured:
-**`UCSI26{gr4phql_1d0r_2_admin_t4k30v3r}`**.
+**`UCSI26{REDACTED}`**.
 
 **App shape**: a single GraphQL endpoint at `/graphql`, no REST surface, no dashboard/agent run
 attempted this time — solved directly by hand from the initial prompt ("StaffDesk... GraphQL...
@@ -1475,7 +1475,7 @@ returned by introspection for auth-sensitive names like `resetToken`/`secret`/`i
 just the obviously-named `flag` field") if more GraphQL targets show up this event. (Web, business-logic/race condition) — flag captured by hand via curl, agent's dashboard run stalled first
 
 Target `52.76.96.108:3000` (UCSI26 hackathon-organizer challenge, not picoCTF/HTB) — flag format
-`UCSI26{...}`. Flag captured: **`UCSI26{4sync_settlement_r4c3_110cbe1e}`**.
+`UCSI26{...}`. Flag captured: **`UCSI26{REDACTED}`**.
 
 **App shape**: a single-page "Withdraw BTC" UI (`Balance: 1.0000 BTC`) backed by an Express app
 (`connect.sid` session cookie). `POST /api/withdraw {"amount": N}` queues a withdrawal ("cleared
@@ -1515,7 +1515,7 @@ Polling `/api/balance` immediately after showed the settlement batch had process
 literally, taking the account to a real negative balance (`balance: -38.996`) — and that
 overdraft tripped the exchange's own fraud "risk-override" path, which (bug, not intended
 defense) leaks the flag directly instead of just blocking/reversing the settlement:
-`{"balance":-38.996,"pending":0,"flag":"UCSI26{4sync_settlement_r4c3_110cbe1e}","lastTx":{...,"settlement_override":"UCSI26{...}"}}`.
+`{"balance":-38.996,"pending":0,"flag":"UCSI26{REDACTED}","lastTx":{...,"settlement_override":"UCSI26{...}"}}`.
 
 **Not yet done**: re-running this exact recipe through the actual agent loop (not just by hand)
 to see whether it can find "race many concurrent withdrawals against one shared session" on its
@@ -1535,7 +1535,7 @@ when a challenge explicitly says "batches" or "settlement" — worth a `ctf-web`
 
 Target `nc 52.76.96.108 9006` (UCSI26 hackathon organizer challenge, 500 pts), binary supplied
 locally at `Hackthon_UCSI/Sandworm/sandworm` (ELF64 PIE, dynamically linked, **not stripped**).
-Flag captured: **`UCSI26{sandworm_vm_oob_escape_025a2ef7}`**.
+Flag captured: **`UCSI26{REDACTED}`**.
 
 **Solved by Claude directly** (WSL-bridged `radare2`/`rabin2` via Bash, then a standalone Python
 exploit script) — not run through `agent.graph`. The binary's symbol table alone (not stripped)
@@ -1645,7 +1645,7 @@ teammate solving an adjacent challenge that turns out to share infrastructure/te
 ## Real hackathon-organizer target — "Pony Express Dispatch" (Web, SSTI → CVE-2026-33937 AST injection RCE) — flag captured by hand via curl, agent not yet tried
 
 Target `52.76.96.108:3013` (UCSI26 hackathon-organizer challenge). Flag captured:
-**`UCSI26{cve-2026-33937_h4ndl3b4rs_4st_1nj3ct10n}`**.
+**`UCSI26{REDACTED}`**.
 
 **App shape**: `POST /api/templates/preview` (`{template, context}`) renders a user-supplied
 Handlebars template server-side against a user-supplied JSON context and returns the plain-text
